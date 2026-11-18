@@ -26,15 +26,21 @@ from pathlib import Path
 from . import photos, privacy
 
 PUBLIC_DIRNAME = "public"
+PUBLIC_FULL_DIRNAME = "public_full"     # 元の解像度の公開版（質感の合成用。data/photos/** なので git の外）
 
 
 def publish(index_path: Path = photos.INDEX_PATH, *, out_dir: Path | None = None, ids: list[str] | None = None,
             long: int = 1600, quality: int = 80, dry_run: bool = False, photo_root: Path | None = None,
-            now: str | None = None, allow_unreviewed: bool = False) -> dict:
+            now: str | None = None, allow_unreviewed: bool = False, full: bool = False) -> dict:
+    """full=True（11/19）：元の解像度のまま、同じ箱を塗った版を public_full/ に出す（質感の合成用。git には入れない）。
+    索引には public_full_file・public_full_at として書き、提出用の public_file は触らない。"""
     now = now or time.strftime("%Y-%m-%dT%H:%M:%S")
+    key, at_key = ("public_full_file", "public_full_at") if full else ("public_file", "public_at")
+    if full:
+        long = 10 ** 6
     index_path = Path(index_path)
     photo_root = Path(photo_root or index_path.parent)
-    out_dir = Path(out_dir or index_path.parent / PUBLIC_DIRNAME)
+    out_dir = Path(out_dir or index_path.parent / (PUBLIC_FULL_DIRNAME if full else PUBLIC_DIRNAME))
     idx = photos.load_index(index_path)
     bases = {r["id"]: copy.deepcopy(r) for r in idx["photos"]}   # 鍵の外で縮小・顔の検出をし、最後に差分だけ書く
     res: dict = {"index": 0, "public": 0, "masked": 0, "boxes": {}, "cropped": 0, "excluded": [], "missing": [],
@@ -44,7 +50,7 @@ def publish(index_path: Path = photos.INDEX_PATH, *, out_dir: Path | None = None
         if ids and not any(rec["id"].startswith(i) for i in ids):
             continue
         res["index"] += 1
-        old = rec.get("public_file")
+        old = rec.get(key)
         if rec.get("period") == "before":
             res["before"] += 1
             continue
@@ -55,7 +61,7 @@ def publish(index_path: Path = photos.INDEX_PATH, *, out_dir: Path | None = None
                 if f.exists() and _inside(f, out_dir):
                     f.unlink()
                     res["removed"] += 1
-                rec["public_file"] = None
+                rec[key] = None
             continue
         src = photos.source_path(rec, photo_root)
         if not src.exists():
@@ -95,8 +101,8 @@ def publish(index_path: Path = photos.INDEX_PATH, *, out_dir: Path | None = None
             f = photo_root / old
             if f.exists() and _inside(f, out_dir):
                 f.unlink()
-        rec["public_file"] = new
-        rec["public_at"] = now
+        rec[key] = new
+        rec[at_key] = now
         res["public"] += 1
     if not dry_run:   # 鍵を取って索引を読み直し、変わった項目だけ書く（11/8 監査 B 3、J-012 の再発を防ぐ）
         photos.patch_index(index_path, {r["id"]: photos.record_diff(bases.get(r["id"]), r) for r in idx["photos"]},

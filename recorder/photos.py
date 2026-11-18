@@ -1806,6 +1806,7 @@ def add_t4_args(psub) -> None:
     q.add_argument("--quality", type=int, default=80)
     q.add_argument("--dry-run", action="store_true")
     q.add_argument("--allow-unreviewed", action="store_true", help="保護係と見直しの両方を通っていない写真も出す（既定は出さない）")
+    q.add_argument("--full", action="store_true", help="元の解像度のまま同じ箱を塗って data/photos/public_full/ に（質感の合成用。git の外）")
     q.add_argument("--index", default=None)
 
 
@@ -1838,7 +1839,7 @@ def run_t4(a) -> int:
 
         res = publish.publish(index_path, out_dir=Path(a.out) if a.out else None, ids=ids, long=a.long,
                               quality=a.quality, dry_run=a.dry_run,
-                              allow_unreviewed=a.allow_unreviewed)
+                              allow_unreviewed=a.allow_unreviewed, full=a.full)
         print(publish.summary_text(res))
         return 0
     with lock("ledger", label=f"recorder photos {cmd}"):

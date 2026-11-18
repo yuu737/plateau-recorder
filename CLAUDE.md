@@ -21,7 +21,7 @@ campus-recorder（`D:\BuiltwithClaude`、Built with Claude: Japan 2026 の提出
 - 座標：JGD2011 平面直角座標系 VII 系（EPSG:6675）、原点 北緯35.1355° 東経136.9755° からの m（x＝東、y＝北）。棟の z は棟の `ground_z`（標高）からの m。
 - Python は `.venv`（3.13、システムの site-packages を共有）。`.venv/Scripts/python -I -X utf8 -m recorder …`。
 - テスト：`.venv/Scripts/python -X utf8 -m pytest -q -m "not browser and not gpu"`。
-- 書き出し（11/19〜）：`.venv/Scripts/python -I -X utf8 -m recorder lod3 build --windows photos --lod 3.0 3.1 3.2 --wall-texture --roof-texture` → `out/lod3/dataset_lod30`・`_lod31`・`_lod32`（どれも LOD0・LOD1 は PLATEAU のまま、LOD2 と LOD3.x は棟 JSON から。壁・窓・扉に公開版の写真の質感、屋根に国土地理院の航空写真）。質感の元の面の画像は `recorder facade public <棟>`（`out/facade_public/`、塗りつぶしのマスク付き）。表示は `viewer/index.html?lod=30|31|32` の「見た目」。
+- 書き出し（11/19〜）：`.venv/Scripts/python -I -X utf8 -m recorder lod3 build --windows photos --lod 3.0 3.1 3.2 --wall-texture --roof-texture` → `out/lod3/dataset_lod30`・`_lod31`・`_lod32`（どれも LOD0・LOD1 は PLATEAU のまま、LOD2 と LOD3.x は棟 JSON から。壁・窓・扉に公開版の写真の質感、屋根に国土地理院の航空写真）。質感の元の面の画像は `recorder facade public <棟>`（`out/facade_public/`、塗りつぶしのマスク付き）。その前に `recorder photos publish --full` で元の解像度の公開版を `data/photos/public_full/`（git の外）に書き出しておくと、そちらを使う。表示は `viewer/index.html?lod=30|31|32` の「見た目」。
   - 質感の合成は見た目だけに使う（寸法の根拠にしない。決まり 3）。方法と先行研究は `recorder/lod3/wall_texture.py` の冒頭と `D:\PLATEAU\lod3\research\texture_prior_art.md`。
 - PLATEAU 公式の変換ツールで開けるか：`recorder lod3 build` の後に WSL で `bash /mnt/d/PLATEAU/plateau-recorder/scripts/check_plateau_converter.sh`（nusamai 0.1.14 の Linux 版。結果と限界は `docs/確認_PLATEAU変換ツール_11-17.md`）。3D Tiles の表示は `viewer/tiles.html`。
 

@@ -41,8 +41,9 @@ PUBLIC_LONG = 1600          # 公開版の写真の長辺（px）
 _IDX: dict = {}
 
 
-def _public_ratio(photo: str, root: Path) -> float:
-    """公開版の写真の縮小の比（公開版の長辺 ÷ 元の写真の長辺）。分からなければ 1。"""
+def _public_ratio(photo: str, root: Path, public_long: int | None = None) -> float:
+    """公開版の写真の縮小の比（公開版の長辺 ÷ 元の写真の長辺）。public_long は面の画像を作った時の公開版の長辺
+    （元の解像度の公開版なら比は 1）。分からなければ 1600 px として計算する。"""
     key = str(Path(root).resolve())
     if key not in _IDX:
         try:
@@ -53,7 +54,7 @@ def _public_ratio(photo: str, root: Path) -> float:
             _IDX[key] = {}
     p = _IDX[key].get(photo) or {}
     long = max(int(p.get("width") or 0), int(p.get("height") or 0))
-    return min(1.0, PUBLIC_LONG / long) if long else 1.0
+    return min(1.0, (public_long or PUBLIC_LONG) / long) if long else 1.0
 
 
 def _rms(meta: dict) -> float | None:
@@ -108,7 +109,7 @@ def face_views(bid: str, fid: str, gaiheki: dict | None = None, root: Path = Pat
                 n_red = int((valid & (red > 0)).sum())
                 valid &= ~(red > 0)
         # 公開版の写真は縮小してある（長辺 1600 px）ので、面の上の実効の解像度は元の写真の値 × 縮小の比
-        dens = float(meta.get("median_photo_px_per_m") or 0) * _public_ratio(ph, root)
+        dens = float(meta.get("median_photo_px_per_m") or 0) * _public_ratio(ph, root, meta.get("public_long"))
         score = dens / (1.0 + (rms or 0.0) / 4.0)      # 解像度が高く、位置合わせの誤差が小さい写真ほど上
         use.append({"photo": ph, "meta": meta, "img": img, "mask": valid, "rms": rms, "dens": dens, "score": score,
                     "redacted_m2": round(n_red / (PPM * PPM), 2)})

@@ -171,7 +171,10 @@ def public_views(bid: str, faces: list[str] | None = None, out_root: Path | None
             if e is None or not rec or not rec.get("public_file"):
                 res["missing_public"].append(meta["photo"])
                 continue
-            pub0 = cv2.imdecode(np.fromfile(str(Path("data") / "photos" / rec["public_file"]), np.uint8), cv2.IMREAD_COLOR)
+            # 元の解像度の公開版（photos publish --full、同じ箱を塗った物）があればそちらを使う（質感が約 3 倍細かくなる）
+            full = rec.get("public_full_file")
+            pub_rel = full if full and (Path("data") / "photos" / full).is_file() else rec["public_file"]
+            pub0 = cv2.imdecode(np.fromfile(str(Path("data") / "photos" / pub_rel), np.uint8), cv2.IMREAD_COLOR)
             W, H = e["image_size"]
             pub = cv2.resize(pub0, (int(W), int(H)), interpolation=cv2.INTER_LINEAR)     # 元の写真の画素の座標にそろえる
             warped = CV.warp_to_face(pub, e, f, rect, meta["px_per_m"], meta["median_photo_px_per_m"])
@@ -193,7 +196,8 @@ def public_views(bid: str, faces: list[str] | None = None, out_root: Path | None
                 wm = CV.warp_to_face(cv2.cvtColor(dm, cv2.COLOR_GRAY2BGR), e, f, rect, meta["px_per_m"], meta["median_photo_px_per_m"])
                 redact_name = f"{meta['photo']}_redact.png"
                 cv2.imencode(".png", ((wm[y0:y1, x0:x1, 0] > 127) * 255).astype(np.uint8))[1].tofile(str(out / redact_name))
-            (out / mj.name).write_text(json.dumps({**meta, "source": "公開版の写真（data/photos/public、塗りつぶし済み）",
+            (out / mj.name).write_text(json.dumps({**meta, "source": f"公開版の写真（data/photos/{pub_rel}、塗りつぶし済み）",
+                                                   "public_long": int(max(pub0.shape[:2])),
                                                    **({"redact_mask": redact_name} if redact_name else {})},
                                                   ensure_ascii=False, indent=1), encoding="utf-8")
             n += 1

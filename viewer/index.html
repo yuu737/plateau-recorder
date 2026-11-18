@@ -80,6 +80,9 @@ const LOD = new URLSearchParams(location.search).get("lod") || "30";
 const GML_OF = d => `../out/lod3/${d}/udx/bldg/52365768_bldg_6697_op.gml`;
 let GML = GML_OF(`dataset_lod${LOD}`);
 if (!(await fetch(GML, { method: "HEAD" })).ok) GML = GML_OF("dataset");     // 区分ごとの出力が無ければ従来の 1 つ
+// ?gml=<リポジトリからの相対パス> で、ほかの PLATEAU の CityGML（公式の LOD3 との比べなど）をそのまま開く
+const GML_PARAM = new URLSearchParams(location.search).get("gml");
+if (GML_PARAM && /^[\w\-./]+\.gml$/.test(GML_PARAM) && !GML_PARAM.includes("..")) GML = "../" + GML_PARAM;
 const NS = { gml:"http://www.opengis.net/gml", bldg:"http://www.opengis.net/citygml/building/2.0",
              gen:"http://www.opengis.net/citygml/generics/2.0" };
 const TYPE_COL = { WallSurface:"#d8d2c4", RoofSurface:"#c0504d", GroundSurface:"#555555", OuterCeilingSurface:"#8064a2",
