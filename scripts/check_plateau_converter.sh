@@ -5,7 +5,7 @@
 set -u
 NUSAMAI=${NUSAMAI:-$HOME/nusamai/nusamai}
 REPO=/mnt/d/PLATEAU/plateau-recorder
-GML=${1:-$REPO/out/lod3/dataset/udx/bldg/52365768_bldg_6697_op.gml}
+GML=${1:-$REPO/out/lod3/dataset_lod30/udx/bldg/52365768_bldg_6697_op.gml}
 OUT=${2:-$REPO/out/lod3_converted}
 mkdir -p "$OUT"
 echo "変換ツール: $($NUSAMAI --version)"
@@ -13,7 +13,10 @@ echo "入力: $GML"
 for sink in geojson 3dtiles gltf; do
   rm -rf "$OUT/$sink"
   echo "== $sink"
-  "$NUSAMAI" "$GML" --sink "$sink" --output "$OUT/$sink" --schema "$OUT/schema_$sink.json" > "$OUT/log_$sink.txt" 2>&1
+  # 3D Tiles と glTF は「テクスチャ付きで最も細かい LOD」を選ぶ（変換ツールの GUI の「テクスチャ付き最大」）
+  T=()
+  if [ "$sink" != geojson ]; then T=(-t use_lod=textured_max_lod); fi
+  "$NUSAMAI" "$GML" --sink "$sink" --output "$OUT/$sink" --schema "$OUT/schema_$sink.json" "${T[@]}" > "$OUT/log_$sink.txt" 2>&1
   echo "終了コード $?"
   tail -5 "$OUT/log_$sink.txt"
 done

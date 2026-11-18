@@ -171,16 +171,30 @@ def public_views(bid: str, faces: list[str] | None = None, out_root: Path | None
             if e is None or not rec or not rec.get("public_file"):
                 res["missing_public"].append(meta["photo"])
                 continue
-            pub = cv2.imdecode(np.fromfile(str(Path("data") / "photos" / rec["public_file"]), np.uint8), cv2.IMREAD_COLOR)
+            pub0 = cv2.imdecode(np.fromfile(str(Path("data") / "photos" / rec["public_file"]), np.uint8), cv2.IMREAD_COLOR)
             W, H = e["image_size"]
-            pub = cv2.resize(pub, (int(W), int(H)), interpolation=cv2.INTER_LINEAR)     # 元の写真の画素の座標にそろえる
+            pub = cv2.resize(pub0, (int(W), int(H)), interpolation=cv2.INTER_LINEAR)     # 元の写真の画素の座標にそろえる
             warped = CV.warp_to_face(pub, e, f, rect, meta["px_per_m"], meta["median_photo_px_per_m"])
             x0, y0, x1, y1 = meta["crop_px"]
             crop = warped[y0:y1, x0:x1]
             mask = cv2.imdecode(np.fromfile(str(fdir / meta["mask"]), np.uint8), cv2.IMREAD_GRAYSCALE) > 0
             crop[~mask] = GRAY
             cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 90])[1].tofile(str(out / meta["image"]))
-            (out / mj.name).write_text(json.dumps({**meta, "source": "公開版の写真（data/photos/public、塗りつぶし済み）"},
+            # 塗りつぶした所（個人情報の灰色の箱）のマスク：元の写真と公開版の差が大きい所。質感の合成でこの画素を使わない
+            # （写真ごとに箱の位置が少しずつ違うので、そのまま重ねると箱と文字が透けて残る）
+            orig = CV._load_photo(e)
+            redact_name = None
+            if orig is not None:
+                o_small = cv2.resize(orig, (pub0.shape[1], pub0.shape[0]), interpolation=cv2.INTER_AREA)
+                d = (np.abs(o_small.astype(np.int16) - pub0.astype(np.int16)).max(axis=2) > 48).astype(np.uint8)
+                d = cv2.morphologyEx(d, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+                d = cv2.dilate(cv2.morphologyEx(d, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8)), np.ones((5, 5), np.uint8))
+                dm = cv2.resize(d * 255, (int(W), int(H)), interpolation=cv2.INTER_NEAREST)
+                wm = CV.warp_to_face(cv2.cvtColor(dm, cv2.COLOR_GRAY2BGR), e, f, rect, meta["px_per_m"], meta["median_photo_px_per_m"])
+                redact_name = f"{meta['photo']}_redact.png"
+                cv2.imencode(".png", ((wm[y0:y1, x0:x1, 0] > 127) * 255).astype(np.uint8))[1].tofile(str(out / redact_name))
+            (out / mj.name).write_text(json.dumps({**meta, "source": "公開版の写真（data/photos/public、塗りつぶし済み）",
+                                                   **({"redact_mask": redact_name} if redact_name else {})},
                                                   ensure_ascii=False, indent=1), encoding="utf-8")
             n += 1
         res["faces"].append({"face": fid, "views": n})
@@ -775,7 +789,7 @@ def compare(bid: str, faces: list[str] | None = None, out_root: Path | None = No
 # ------------------------------------------------------------------ コマンド
 
 def add_args(p) -> None:
-    p.add_argument("action", choices=["views", "detect", "fuse", "refine", "regularize", "compare", "all"])
+    p.add_argument("action", choices=["views", "detect", "fuse", "refine", "regularize", "compare", "public", "all"])
     p.add_argument("building")
     p.add_argument("--faces", default=None, help="面 id（カンマ区切り。省略で写真のある面全部）")
     p.add_argument("--no-occlusion", action="store_true", help="PLATEAU の他の棟による遮蔽を使わない")
@@ -820,6 +834,12 @@ def run_cli(a) -> int:
             r = regularize(a.building, faces)
             for f in r["faces"]:
                 print(f"{a.building} {f['face']}: 並び方で整えた窓 {f['windows']}（直した {f['adjusted']}・捨てた {f['dropped']}）")
+        elif st == "public":
+            r = public_views(a.building, faces)
+            for f in r["faces"]:
+                print(f"{a.building} {f['face']}: 公開版の面の画像 {f['views']} 枚（out/facade_public、塗りつぶしのマスク付き）")
+            if r["missing_public"]:
+                print(f"公開版の無い写真 {len(r['missing_public'])} 枚")
         elif st == "compare":
             r = compare(a.building, faces, min_n=a.min_n)
             for f in r["faces"]:

@@ -47,11 +47,16 @@
     <h1>値ごとの確かさつき LOD3（名城大学 天白キャンパス 4 棟）</h1>
     <div class="muted">PLATEAU 仕様（CityGML 2.0＋i-UR 3.1）の LOD3 のファイルをそのまま読んで表示しています。色は<b>値の確かさ</b>（公共測量の地図情報レベル相当）。窓や壁をクリックすると、その値の σ・出どころ・根拠の写真が出ます。</div>
     <div class="row">
+      <button id="m-look">見た目（写真の質感）</button>
       <button id="m-grade" class="on">確かさ（地図情報レベル相当）</button>
       <button id="m-lin">出どころ</button>
       <button id="m-type">地物の種類</button>
     </div>
     <div class="row">
+      <select id="lodsel" title="LOD3 の区分（同じ棟の記録から一斉に書き出した物）">
+        <option value="30">LOD3.0（標準）</option><option value="31">LOD3.1</option><option value="32">LOD3.2</option>
+      </select>
+      <button id="t-lod2">LOD2（棟の記録から）</button>
       <button id="t-inst" class="on">付属物</button>
       <button id="t-lod1">PLATEAU LOD1（元）</button>
       <select id="bsel"></select>
@@ -70,7 +75,11 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
-const GML = "../out/lod3/dataset/udx/bldg/52365768_bldg_6697_op.gml";   // recorder lod3 build の出力
+// recorder lod3 build の出力。?lod=30|31|32 で LOD3 の区分を選ぶ（--lod を 2 つ以上渡すと dataset_lod30 のように区分ごとに出る）
+const LOD = new URLSearchParams(location.search).get("lod") || "30";
+const GML_OF = d => `../out/lod3/${d}/udx/bldg/52365768_bldg_6697_op.gml`;
+let GML = GML_OF(`dataset_lod${LOD}`);
+if (!(await fetch(GML, { method: "HEAD" })).ok) GML = GML_OF("dataset");     // 区分ごとの出力が無ければ従来の 1 つ
 const NS = { gml:"http://www.opengis.net/gml", bldg:"http://www.opengis.net/citygml/building/2.0",
              gen:"http://www.opengis.net/citygml/generics/2.0" };
 const TYPE_COL = { WallSurface:"#d8d2c4", RoofSurface:"#c0504d", GroundSurface:"#555555", OuterCeilingSurface:"#8064a2",
@@ -121,11 +130,31 @@ const toLocal = (lat, lon, h) => new THREE.Vector3((lon - lon0) * kx, h - h0, -(
 const ringPts = lr => { const v = lr.getElementsByTagNameNS(NS.gml, "posList")[0].textContent.trim().split(/\s+/).map(Number);
   const pts = []; for (let i = 0; i + 2 < v.length; i += 3) pts.push(toLocal(v[i], v[i + 1], v[i + 2])); pts.pop(); return pts; };
 
+// 写真の質感（CityGML の app:ParameterizedTexture）：面の gml:id → 画像と、輪ごとのテクスチャ座標
+const APP = "http://www.opengis.net/citygml/appearance/2.0";
+const GML_DIR = GML.slice(0, GML.lastIndexOf("/") + 1);
+const texOf = {};
+for (const pt of doc.getElementsByTagNameNS(APP, "ParameterizedTexture")) {
+  const uri = GML_DIR + pt.getElementsByTagNameNS(APP, "imageURI")[0].textContent.trim();
+  for (const tg of pt.getElementsByTagNameNS(APP, "target")) {
+    const rings = {};
+    for (const tc of tg.getElementsByTagNameNS(APP, "textureCoordinates"))
+      rings[tc.getAttribute("ring").replace(/^#/, "")] = tc.textContent.trim().split(/\s+/).map(Number);
+    texOf[tg.getAttribute("uri").replace(/^#/, "")] = { uri, rings };
+  }
+}
+const texCache = {}, loader = new THREE.TextureLoader();
+const textureOf = uri => texCache[uri] ??= (t => { t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return t; })(loader.load(uri));
+
 function geomOf(polys) {
-  const pos = [], nrm = [];
+  const pos = [], nrm = [], uv = [];
+  let texUri = null;
   for (const poly of polys) {
-    const rs = q(poly, "gml", "LinearRing").map(ringPts);
+    const lrs = q(poly, "gml", "LinearRing"), rs = lrs.map(ringPts);
     if (!rs.length || rs[0].length < 3) continue;
+    const tx = texOf[gid(poly)];
+    if (tx) texUri ??= tx.uri;
+    const uvs = lrs.flatMap((lr, i) => { const c = tx?.rings[gid(lr)]; return rs[i].map((_, j) => c ? [c[2 * j], c[2 * j + 1]] : [0, 0]); });
     const n = new THREE.Vector3(), P = rs[0];
     for (let i = 0; i < P.length; i++) { const a = P[i], b = P[(i + 1) % P.length]; n.x += (a.y - b.y) * (a.z + b.z); n.y += (a.z - b.z) * (a.x + b.x); n.z += (a.x - b.x) * (a.y + b.y); }
     n.normalize();
@@ -133,35 +162,42 @@ function geomOf(polys) {
     const e2 = n.clone().cross(e1), to2 = p => new THREE.Vector2(p.dot(e1), p.dot(e2));
     const tris = THREE.ShapeUtils.triangulateShape(rs[0].map(to2), rs.slice(1).map(r => r.map(to2)));
     const all = rs.flat();
-    for (const tri of tris) for (const k of tri) { const p = all[k]; pos.push(p.x, p.y, p.z); nrm.push(n.x, n.y, n.z); }
+    for (const tri of tris) for (const k of tri) { const p = all[k]; pos.push(p.x, p.y, p.z); nrm.push(n.x, n.y, n.z); uv.push(...uvs[k]); }
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute("normal", new THREE.Float32BufferAttribute(nrm, 3));
+  g.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
+  g.userData.texUri = texUri;
   return g;
 }
 
 const NAME = { "bldg_05e6cc71-7768-43d3-9af5-3ba5663c44c8":"本部棟", "bldg_feae3e15-dd53-4b4a-8f30-bb05525d15e3":"図書館",
   "bldg_89288d72-791f-424c-aadd-fb81a2ef906f":"タワー75", "bldg_f8e12e3c-913b-4ee1-926c-bec978e8ef65":"共通講義棟南" };
 const objects = [], buildings = [];
-const groupInst = new THREE.Group(), groupLod1 = new THREE.Group(); scene.add(groupInst, groupLod1); groupLod1.visible = false;
+const groupInst = new THREE.Group(), groupLod1 = new THREE.Group(), groupL3 = new THREE.Group(), groupL2 = new THREE.Group();
+scene.add(groupL3, groupInst, groupLod1, groupL2); groupLod1.visible = false; groupL2.visible = false;
 let rulerText = "";
 for (const b of q(doc, "bldg", "Building")) {
   const bbox = new THREE.Box3(), name = NAME[gid(b)] || gid(b), wins = [];
   for (const [k, v] of attrsOf(b)) if (k === "LOD3の精度の物差し") rulerText = v;
-  const add = (el, type, polys, parent = scene) => {
+  const add = (el, type, polys, parent = groupL3) => {
     const g = geomOf(polys); if (!g.attributes.position.count) return;
     const attrs = attrsOf(el), A = Object.fromEntries(attrs);
     const mat = new THREE.MeshLambertMaterial({ color: "#ccc", side: THREE.DoubleSide,
       polygonOffset: type === "Window" || type === "Door", polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
     const mesh = new THREE.Mesh(g, mat);
-    mesh.userData = { el, type, attrs, grade: A["精度.等級"] || "±の記録なし", lin: A["出どころ（いちばん弱い値）"] || "記録なし", building: name };
+    mesh.userData = { el, type, attrs, grade: A["精度.等級"] || "±の記録なし", lin: A["出どころ（いちばん弱い値）"] || "記録なし", building: name,
+                      texUri: g.userData.texUri };
     mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(g, 20), new THREE.LineBasicMaterial({ color: 0x333333, transparent: true, opacity: 0.3 })));
     parent.add(mesh); objects.push(mesh); g.computeBoundingBox(); bbox.union(g.boundingBox);
-    if (type === "Window") wins.push(mesh.userData.grade);
+    if (type === "Window" && parent === groupL3) wins.push(mesh.userData.grade);
   };
   for (const tag of ["WallSurface", "RoofSurface", "GroundSurface", "OuterCeilingSurface", "OuterFloorSurface"])
-    for (const s of q(b, "bldg", tag)) { const ms = s.getElementsByTagNameNS(NS.bldg, "lod3MultiSurface")[0]; if (ms) add(s, tag, q(ms, "gml", "Polygon")); }
+    for (const s of q(b, "bldg", tag)) {
+      const ms = s.getElementsByTagNameNS(NS.bldg, "lod3MultiSurface")[0]; if (ms) add(s, tag, q(ms, "gml", "Polygon"));
+      const m2 = s.getElementsByTagNameNS(NS.bldg, "lod2MultiSurface")[0]; if (m2) add(s, tag, q(m2, "gml", "Polygon"), groupL2);
+    }
   for (const tag of ["Window", "Door"]) for (const w of q(b, "bldg", tag)) add(w, tag, q(w, "gml", "Polygon"));
   for (const it of q(b, "bldg", "BuildingInstallation")) add(it, "BuildingInstallation", q(it, "gml", "Polygon"), groupInst);
   const l1 = b.getElementsByTagNameNS(NS.bldg, "lod1Solid")[0];
@@ -171,20 +207,34 @@ for (const b of q(doc, "bldg", "Building")) {
 document.getElementById("ruler").textContent = rulerText;
 
 let mode = "grade";
+// 見た目：写真の質感があれば貼る。無い面は落ち着いた素材の色（窓はガラス、扉は濃い色）
+const LOOK_COL = { WallSurface:"#d9d1c2", RoofSurface:"#b9b6ae", GroundSurface:"#8a8a85", OuterCeilingSurface:"#cfc8ba",
+  OuterFloorSurface:"#c9c3b5", Window:"#5b6f80", Door:"#4a4038", BuildingInstallation:"#bdb6a8" };
 function paint() {
   for (const m of objects) {
     const u = m.userData;
-    m.material.color.set(mode === "grade" ? (GCOL[u.grade] || "#bdbdbd") : mode === "lin" ? (LCOL[u.lin] || "#bdbdbd") : TYPE_COL[u.type]);
+    const tex = mode === "look" && u.texUri ? textureOf(u.texUri) : null;
+    if (m.material.map !== tex) { m.material.map = tex; m.material.needsUpdate = true; }
+    m.material.color.set(tex ? "#ffffff" : mode === "look" ? LOOK_COL[u.type] : mode === "grade" ? (GCOL[u.grade] || "#bdbdbd")
+      : mode === "lin" ? (LCOL[u.lin] || "#bdbdbd") : TYPE_COL[u.type]);
+    for (const c of m.children) c.visible = mode !== "look";       // 見た目では稜線を消す
   }
   const lg = document.getElementById("legend");
-  lg.innerHTML = mode === "grade" ? GRADES.map(([k, c, d]) => `<div><i style="background:${c}"></i><b>${k}</b><span class="muted">${d}</span></div>`).join("")
+  const nTex = objects.filter(o => o.userData.texUri).length;
+  lg.innerHTML = mode === "look" ? `<div class="muted">写真の質感を貼った地物 ${nTex} 個（公開版の写真から。塗りつぶしは個人情報を消した所）。質感の無い所は素材の色。</div>`
+    : mode === "grade" ? GRADES.map(([k, c, d]) => `<div><i style="background:${c}"></i><b>${k}</b><span class="muted">${d}</span></div>`).join("")
     : mode === "lin" ? LINS.map(([k, c]) => `<div><i style="background:${c}"></i>${k}</div>`).join("") + `<div class="muted">いちばん弱い値の出どころで色を付けています</div>`
     : Object.entries(TYPE_JA).map(([k, v]) => `<div><i style="background:${TYPE_COL[k]}"></i>${v}</div>`).join("");
 }
 const btn = id => document.getElementById(id);
-const setMode = m => { mode = m; [["m-grade", "grade"], ["m-lin", "lin"], ["m-type", "type"]].forEach(([id, k]) => btn(id).classList.toggle("on", k === m)); paint(); };
-btn("m-grade").onclick = () => setMode("grade"); btn("m-lin").onclick = () => setMode("lin"); btn("m-type").onclick = () => setMode("type");
-btn("t-inst").onclick = e => { groupInst.visible = !groupInst.visible; e.target.classList.toggle("on", groupInst.visible); };
+const MODES = [["m-look", "look"], ["m-grade", "grade"], ["m-lin", "lin"], ["m-type", "type"]];
+const setMode = m => { mode = m; MODES.forEach(([id, k]) => btn(id).classList.toggle("on", k === m)); paint(); };
+MODES.forEach(([id, k]) => btn(id).onclick = () => setMode(k));
+let instOn = true;
+btn("t-inst").onclick = e => { instOn = !instOn; groupInst.visible = instOn && !groupL2.visible; e.target.classList.toggle("on", instOn); };
+btn("t-lod2").onclick = e => { const on = !groupL2.visible; groupL2.visible = on; groupL3.visible = !on; groupInst.visible = instOn && !on; e.target.classList.toggle("on", on); };
+const lodsel = btn("lodsel"); lodsel.value = LOD;
+lodsel.onchange = () => { const p = new URLSearchParams(location.search); p.set("lod", lodsel.value); location.search = p.toString(); };
 btn("t-lod1").onclick = e => { groupLod1.visible = !groupLod1.visible; e.target.classList.toggle("on", groupLod1.visible); };
 
 // 棟ごとの窓の確かさ（帯グラフ）

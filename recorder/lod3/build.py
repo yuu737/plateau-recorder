@@ -785,7 +785,34 @@ def door_rects(bid: str, f: dict) -> list[dict]:
     return out
 
 
-def place_openings(walls: list[Facet], faces: dict, rule: dict, report: dict, bid: str | None = None):
+DOOR_WORDS = ("扉", "ドア", "シャッター")
+
+
+def patch_door_rects(b: dict | None, f: dict) -> list[dict]:
+    """棟 JSON の parts のうち、面に描いた扉（type patch、名前に 扉・ドア・シャッター）を扉の矩形に。
+    campus-recorder は扉を色の塗り分け（patch）として持っていた（位置・高さ・± は値ごとに根拠つき）。
+    σ は along0・along1（横）と z0・z1（縦）の ± から（σ ＝ ± × SIGMA_PER_TOL）。"""
+    out = []
+    for i, p in enumerate((b or {}).get("parts") or []):
+        if p.get("type") != "patch" or p.get("face") != f["id"] or not any(w in (p.get("name") or "") for w in DOOR_WORDS):
+            continue
+        ms = {k: p.get(k) for k in ("along0", "along1", "z0", "z1")}
+        vals = {k: V(m) for k, m in ms.items()}
+        if any(v is None for v in vals.values()):
+            continue
+        sig = {k: Q.sigma_of(m) for k, m in ms.items()}
+        miss = [f"parts[{i}].{k}" for k, s in sig.items() if s is None]
+        out.append({"face": f["id"], "src": f"parts[{i}]", "row": p.get("name", "扉"),
+                    "s0": min(vals["along0"], vals["along1"]), "s1": max(vals["along0"], vals["along1"]),
+                    "z0": min(vals["z0"], vals["z1"]), "z1": max(vals["z0"], vals["z1"]), "kind": "door",
+                    "sigma_h": None if miss else max(sig["along0"], sig["along1"]),
+                    "sigma_v": None if miss else max(sig["z0"], sig["z1"]),
+                    "used": {f"扉.{k}": meas(m) for k, m in ms.items()}, "ev": {k: meas(m) for k, m in ms.items()},
+                    **({"sigma_missing": miss} if miss else {})})
+    return out
+
+
+def place_openings(walls: list[Facet], faces: dict, rule: dict, report: dict, bid: str | None = None, b: dict | None = None):
     placed, skipped = [], []
     report["window_source"] = {"mode": WINDOW_SOURCE, "photo_faces": [], "min_photos": MIN_PHOTOS}
     for f in faces.values():
@@ -793,6 +820,7 @@ def place_openings(walls: list[Facet], faces: dict, rule: dict, report: dict, bi
         rects = face_window_rects_sigma(f)
         if bid:
             rects += door_rects(bid, f)
+        rects += patch_door_rects(b, f)
         if WINDOW_SOURCE == "photos" and bid:
             pr = photo_window_rects(bid, f)
             if pr is not None:
@@ -974,6 +1002,104 @@ def fix_tjunctions(rings: list[np.ndarray], tol=1e-3) -> list[np.ndarray]:
 
 # ------------------------------------------------------------------ 1 棟
 
+def _closed_ok(body) -> bool:
+    """体の面（平面ごと、T 字を直した後）が、どの辺もちょうど 2 枚の面で逆向きに共有されているか。"""
+    Vx, T = mesh_of(body)
+    rings = []
+    for f in facets_from_mesh(Vx, T):
+        rings += [f.to3d(np.array(f.poly.exterior.coords)[:-1])] + [f.to3d(np.array(r.coords)[:-1]) for r in f.poly.interiors]
+    return check_closed(fix_tjunctions(rings))["unmatched_edges"] == 0
+
+
+def _classify(Vx, T, facets):
+    """面の種類：壁・屋根・底・軒下（下向きで底でない）・床（上向きで上に体がある）。"""
+    zmin = float(Vx[:, 2].min())
+    for f in facets:
+        nz = f.n[2]
+        if abs(nz) < 0.02:
+            f.kind = "wall"
+        elif nz > 0:
+            c = f.poly.representative_point()
+            P = f.to3d([(c.x, c.y)])[0]
+            hits = ray_up_hits(Vx, T, P + np.array([0, 0, 1e-3]))
+            f.kind = "floor" if hits else "roof"
+        else:
+            zc = f.to3d([tuple(f.poly.representative_point().coords)[0]])[0][2]
+            f.kind = "ground" if abs(zc - zmin) < 0.05 else "ceiling"
+
+
+def build_lod2_facets(b: dict, roof_json: dict | None) -> tuple[list, dict]:
+    """棟 JSON から LOD2（塊と屋根の形。彫り込み・開口・付属物なし）。塊の段差の取り方は LOD3.0 と同じ基準。"""
+    rule = LOD_RULES["3.0"]
+    report = {"id": b["id"], "warnings": []}
+    faces = {f["id"]: f for f in b.get("faces", []) if f.get("from") and f.get("to")}
+    body, base, heights, regions, blocks = build_body(b, rule, report)
+    Vx, T = mesh_of(body)
+    facets = facets_from_mesh(Vx, T)
+    _classify(Vx, T, facets)
+    attach_evidence(b, facets, faces, blocks, [], roof_json)
+    report["volume_m3"] = round(body.volume(), 1)
+    return facets, report
+
+
+def write_lod2(bel, b: dict, facets, geo: Geo, evidence: dict) -> list:
+    """PLATEAU の Building 要素 bel に LOD2（lod2Solid と、lod2MultiSurface の境界面）を足す。LOD3 を足した後に呼ぶ。
+    並びは CityGML 2.0 の決まり：lod2Solid は lod1 の後、境界面は他の boundedBy の前（付属物より後）。"""
+    bid = b["id"]
+    items = [(f, [f.to3d(np.array(f.poly.exterior.coords)[:-1])] + [f.to3d(np.array(r.coords)[:-1]) for r in f.poly.interiors])
+             for f in facets]
+    fixed = fix_tjunctions([r for _, rs in items for r in rs])
+    k = 0
+    bounded, refs, rings_all = [], [], []
+    for i, (f, rs) in enumerate(items):
+        rs2 = fixed[k:k + len(rs)]
+        k += len(rs)
+        rings_all += rs2
+        bb = E(B + "boundedBy")
+        sid = "surf2_" + uid(bid, "lod2", i)
+        sf = E(B + SURF_TAG[f.kind], bb, **{GM + "id": sid})
+        meta = {kk: f.meta.get(kk) for kk in ("face", "face_name", "note", "ev") if f.meta.get(kk)}
+        qual = feature_quality(meta)
+        gen_attrs(sf, meta, qual)
+        evidence[sid] = {"kind": f.kind, "lod": "2", "quality": qual, **{kk: f.meta.get(kk) for kk in ("face", "note") if f.meta.get(kk)}}
+        ms = E(B + "lod2MultiSurface", sf)
+        sm = E(GM + "surfaceMember", E(GM + "MultiSurface", ms))
+        pid = "poly2_" + uid(bid, "lod2", i)
+        gml_polygon(sm, rs2, geo, pid)
+        refs.append(pid)
+        bounded.append(bb)
+    ls = E(B + "lod2Solid")
+    cs = E(GM + "CompositeSurface", E(GM + "exterior", E(GM + "Solid", ls)))
+    for pid in refs:
+        E(GM + "surfaceMember", cs, **{XL + "href": "#" + pid})
+    kids = list(bel)
+    pos = 0
+    for i, ch in enumerate(kids):
+        if etree.QName(ch).namespace == NS["bldg"] and etree.QName(ch).localname in (
+                "measuredHeight", "storeysAboveGround", "storeysBelowGround", "lod0FootPrint", "lod0RoofEdge",
+                "lod1Solid", "lod1MultiSurface", "lod1TerrainIntersection"):
+            pos = i + 1
+    bel.insert(pos, ls)
+    kids = list(bel)
+    first = next((i for i, ch in enumerate(kids) if etree.QName(ch).localname == "boundedBy"), None)
+    if first is None:
+        first = next(i for i, ch in enumerate(kids) if etree.QName(ch).localname == "lod3Solid")
+    for j, bb in enumerate(bounded):
+        bel.insert(first + j, bb)
+    # データ品質属性：LOD2 の形の出典と、LOD の区分（京都 2025 の公式データと同じく 2.0 と 3.x を並べる）
+    dq = bel.find(f".//{URO}DataQualityAttribute")
+    if dq is not None:
+        cs_g = "../../codelists/DataQualityAttribute_geometrySrcDesc.xml"
+        g3 = next((i for i, ch in enumerate(dq) if etree.QName(ch).localname == "geometrySrcDescLod3"), None)
+        if g3 is not None:
+            for j, code in enumerate(("000", "801", "901")):
+                dq.insert(g3 + j, E(URO + "geometrySrcDescLod2", None, code, codeSpace=cs_g))
+        lt = next((i for i, ch in enumerate(dq) if etree.QName(ch).localname == "lodType"), None)
+        if lt is not None:
+            dq.insert(lt, E(URO + "lodType", None, "2.0", codeSpace="../../codelists/Building_lodType.xml"))
+    return rings_all
+
+
 def build_building(b: dict, lod: str, roof_json: dict | None):
     rule = LOD_RULES[lod]
     report = {"id": b["id"], "name": b["name"], "lod": lod, "warnings": []}
@@ -995,28 +1121,29 @@ def build_building(b: dict, lod: str, roof_json: dict | None):
             c["m_ext"] = m
             used_cuts.append(c)
     if used_cuts:
-        body = body - M.Manifold.batch_boolean([c["m_ext"] for c in used_cuts], M.OpType.Add)
+        body0 = body
+        body = body0 - M.Manifold.batch_boolean([c["m_ext"] for c in used_cuts], M.OpType.Add)
+        # 彫り込みで 2 つの塊が辺だけで接する形（1 本の辺を 4 枚の面が共有）になると、CityGML の立体として閉じない。
+        # その時は、閉じるまで彫り込みを 1 つずつ外して試す（外した物と理由は報告に残す）
+        if not _closed_ok(body):
+            for c in sorted(used_cuts, key=lambda c: min(c["dims"])):
+                trial = [x for x in used_cuts if x is not c]
+                tb = body0 - M.Manifold.batch_boolean([x["m_ext"] for x in trial], M.OpType.Add) if trial else body0
+                if _closed_ok(tb):
+                    used_cuts, body = trial, tb
+                    for rec in report.get("cuts", []):
+                        if rec["part"] == c["part"] and rec["used"] and rec["dims_m"] == [round(x, 2) for x in c["dims"]]:
+                            rec["used"] = False
+                            rec["why"] = "使うと 2 つの塊が辺だけで接し、立体が閉じなくなるので外した"
+                    break
     report["volume_m3"] = round(body.volume(), 1)
     report["genus"] = body.genus()
 
     Vx, T = mesh_of(body)
     facets = facets_from_mesh(Vx, T)
-    zmin = float(Vx[:, 2].min())
-    # 上向きの面の上に体があるか（光線）
-    for f in facets:
-        nz = f.n[2]
-        if abs(nz) < 0.02:
-            f.kind = "wall"
-        elif nz > 0:
-            c = f.poly.representative_point()
-            P = f.to3d([(c.x, c.y)])[0]
-            hits = ray_up_hits(Vx, T, P + np.array([0, 0, 1e-3]))
-            f.kind = "floor" if hits else "roof"
-        else:
-            zc = f.to3d([tuple(f.poly.representative_point().coords)[0]])[0][2]
-            f.kind = "ground" if abs(zc - zmin) < 0.05 else "ceiling"
+    _classify(Vx, T, facets)
 
-    placed = place_openings(facets, faces, rule, report, b.get("id"))
+    placed = place_openings(facets, faces, rule, report, b.get("id"), b)
 
     # 付属物：体と重なる所を引く
     inst_out = []
@@ -1251,7 +1378,7 @@ RULER_TEXT = ("各地物の「精度.等級」は、棟 JSON の値の ± を標
 
 
 def write_lod3(bel, b: dict, facets, insts, geo: Geo, evidence: dict, lod: str, textured: bool = False,
-               grades: dict | None = None):
+               grades: dict | None = None, wall_textured: bool = False):
     """PLATEAU の Building 要素 bel に LOD3 を足す。"""
     bid = b["id"]
     grades = grades if grades is not None else defaultdict(list)
@@ -1266,6 +1393,7 @@ def write_lod3(bel, b: dict, facets, insts, geo: Geo, evidence: dict, lod: str, 
     new = []
     solid_refs = []
     rings_all = []
+    tex_polys = []     # 壁と開口の多角形（面ごとに写真の質感を貼る時に使う）
     # まず全ての輪を集めて T 字を直す
     items = []        # (owner, kind, rings)
     for f in facets:
@@ -1344,6 +1472,8 @@ def write_lod3(bel, b: dict, facets, insts, geo: Geo, evidence: dict, lod: str, 
         pid = "poly_" + uid(bid, "surf", i)
         rids = gml_polygon(sm, rs, geo, pid)
         solid_refs.append(pid)
+        if f.kind == "wall" and f.meta.get("face"):
+            tex_polys.append({"face": f.meta["face"], "pid": pid, "rids": rids, "rings": rs})
         if f.kind == "roof":
             roof_rings.append({"pid": pid, "rids": rids, "rings": rs})
         # 開口
@@ -1368,7 +1498,9 @@ def write_lod3(bel, b: dict, facets, insts, geo: Geo, evidence: dict, lod: str, 
                 mm = E(GM + "MultiSurface", lm)
                 smm = E(GM + "surfaceMember", mm)
                 pid2 = "poly_" + uid(bid, "open", j)
-                gml_polygon(smm, rs2, geo, pid2)
+                rids2 = gml_polygon(smm, rs2, geo, pid2)
+                if f.meta.get("face"):
+                    tex_polys.append({"face": f.meta["face"], "pid": pid2, "rids": rids2, "rings": rs2})
                 solid_refs.append(pid2)
                 continue
             if src.get("photo_window"):
@@ -1397,7 +1529,9 @@ def write_lod3(bel, b: dict, facets, insts, geo: Geo, evidence: dict, lod: str, 
                 mm = E(GM + "MultiSurface", lm)
                 smm = E(GM + "surfaceMember", mm)
                 pid2 = "poly_" + uid(bid, "open", j)
-                gml_polygon(smm, rs2, geo, pid2)
+                rids2 = gml_polygon(smm, rs2, geo, pid2)
+                if f.meta.get("face"):
+                    tex_polys.append({"face": f.meta["face"], "pid": pid2, "rids": rids2, "rings": rs2})
                 solid_refs.append(pid2)
                 continue
             # 根拠は「この窓の縁を実際に動かした値」だけ（使われない柱型の幅などは出さない）
@@ -1428,7 +1562,9 @@ def write_lod3(bel, b: dict, facets, insts, geo: Geo, evidence: dict, lod: str, 
             mm = E(GM + "MultiSurface", lm)
             smm = E(GM + "surfaceMember", mm)
             pid2 = "poly_" + uid(bid, "open", j)
-            gml_polygon(smm, rs2, geo, pid2)
+            rids2 = gml_polygon(smm, rs2, geo, pid2)
+            if f.meta.get("face"):
+                tex_polys.append({"face": f.meta["face"], "pid": pid2, "rids": rids2, "rings": rs2})
             solid_refs.append(pid2)
         new.append(bb)
 
@@ -1474,9 +1610,56 @@ def write_lod3(bel, b: dict, facets, insts, geo: Geo, evidence: dict, lod: str, 
             if etree.QName(ch).localname.startswith(("appearanceSrcDesc", "thematicSrcDesc")):
                 last_a = ch
         pos = list(dq).index(last_a) + 1
-        dq.insert(pos, E(URO + "appearanceSrcDescLod3", None, "1" if textured else "99", codeSpace=cs_a))   # 1＝空中写真（屋根）
-        dq.insert(pos + 1, E(URO + "lodType", None, lod, codeSpace="../../codelists/Building_lodType.xml"))
-    return rings_all, roof_rings
+        # 見た目の出典：1＝空中写真（屋根）、4＝手持ちカメラで撮った写真（壁・窓・扉）、99＝未作成
+        codes = (["1"] if textured else []) + (["4"] if wall_textured else []) or ["99"]
+        for j, code in enumerate(codes):
+            dq.insert(pos + j, E(URO + "appearanceSrcDescLod3", None, code, codeSpace=cs_a))
+        dq.insert(pos + len(codes), E(URO + "lodType", None, lod, codeSpace="../../codelists/Building_lodType.xml"))
+    return rings_all, roof_rings, tex_polys
+
+
+def write_wall_textures(bn: str, b: dict, tex_polys: list, appearance, img_dir: Path, app_dir_name: str) -> dict:
+    """面ごとに公開版の写真から質感を合成し、app:ParameterizedTexture として壁と開口の多角形に貼る。戻り値は面ごとの記録。"""
+    import cv2
+
+    from .. import facade as FA
+    from . import wall_texture as WT
+
+    APP = f"{{{NS['app']}}}"
+    gks = gaiheki_reports(bn)
+    byface = defaultdict(list)
+    for tp in tex_polys:
+        byface[tp["face"]].append(tp)
+    out = {}
+    for f in b.get("faces") or []:
+        fid = f["id"]
+        if fid not in byface or not (f.get("from") and f.get("to")):
+            continue
+        rect = FA.face_rect(b, f)
+        if rect is None:
+            continue
+        views, skipped = WT.face_views(bn, fid, gks.get(fid), root=CR)
+        img, info = WT.compose(rect, views, pitch_m=V((f.get("bays") or {}).get("pitch")))
+        info["skipped"] = skipped
+        out[fid] = info
+        if img is None:
+            continue
+        timg, k, size = WT.to_pow2(img)
+        name = f"{bn}_{fid}.jpg"
+        img_dir.mkdir(parents=True, exist_ok=True)
+        cv2.imencode(".jpg", timg, [cv2.IMWRITE_JPEG_QUALITY, 88])[1].tofile(str(img_dir / name))
+        info.update({"image": f"{app_dir_name}/{name}", "image_px": list(size), "scale": round(k, 4)})
+        p0, u, _, _ = face_axes(f)
+        sd = E(APP + "surfaceDataMember", appearance)
+        pt = E(APP + "ParameterizedTexture", sd, **{GM + "id": "tex_" + uid(bn, "wall", fid)})
+        E(APP + "imageURI", pt, f"{app_dir_name}/{name}")
+        E(APP + "mimeType", pt, "image/jpeg")
+        for tp in byface[fid]:
+            tcl = E(APP + "TexCoordList", E(APP + "target", pt, uri="#" + tp["pid"]))
+            for rid, R in zip(tp["rids"], tp["rings"]):
+                uv = WT.tex_coords(np.vstack([R, R[:1]]), p0, u, rect, WT.PPM, k, size)
+                E(APP + "textureCoordinates", tcl, " ".join(f"{a:.6f} {c:.6f}" for a, c in uv), ring="#" + rid)
+    return out
 
 
 # ------------------------------------------------------------------ 立体の検査
@@ -1503,11 +1686,15 @@ def check_closed(rings: list[np.ndarray]) -> dict:
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="recorder lod3 build")
     ap.add_argument("--buildings", nargs="+", default=["honbu", "library", "tower75", "kyotsu-minami"])
-    ap.add_argument("--lod", default="3.0", choices=list(LOD_RULES))
+    ap.add_argument("--lod", nargs="+", default=["3.0"], choices=list(LOD_RULES),
+                    help="LOD3 の区分（いくつでも。2 つ以上なら <dataset>_lod30 のように区分ごとに書き出す）")
+    ap.add_argument("--no-lod2", action="store_true", help="棟 JSON から作る LOD2（塊と屋根、開口なし）を書かない")
     ap.add_argument("--plateau", default=str(SOURCE_GML))
     ap.add_argument("--out", default=str(OUT_DIR))
     ap.add_argument("--dataset", default=str(OUT_DIR / "dataset"), help="PLATEAU と同じ並び（udx/bldg・codelists・schemas）")
     ap.add_argument("--roof-texture", action="store_true", help="屋根に航空写真を貼る（既定は貼らない。航空写真は屋上の縁の照合にだけ使う）")
+    ap.add_argument("--wall-texture", action="store_true",
+                    help="壁・窓・扉に公開版の写真から作った質感を貼る（面ごとに合成。recorder/lod3/wall_texture.py）")
     ap.add_argument("--windows", default="model", choices=["model", "photos"],
                     help="窓の出どころ。photos＝recorder facade で写真どうしを照合した窓（その面に無ければ棟 JSON の窓）")
     ap.add_argument("--min-photos", type=int, default=2, help="--windows photos で使う窓の、写った写真の枚数の下限")
@@ -1527,7 +1714,18 @@ def main(argv=None):
                                     "棟の記録の ± は物差しの許容を積んだ幅で、標準偏差ではない）")
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    # 同じ棟 JSON から、LOD3 の区分ごとに一斉に書き出す（どの区分にも LOD0・LOD1 は PLATEAU のまま、LOD2 は棟 JSON から）
+    lods = list(dict.fromkeys(args.lod))
+    all_thumbs: dict = {}
+    for lod in lods:
+        ds = Path(args.dataset) if len(lods) == 1 else Path(f"{args.dataset}_lod{lod.replace('.', '')}")
+        all_thumbs.update(_build_one(args, lod, ds, out))
+    # 表示画面が読む：地物の id → 根拠の写真の切り抜き（公開版の写真から。thumbs/ からの相対パス）
+    json.dump(all_thumbs, open(out / "thumbs.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
 
+
+def _build_one(args, lod: str, dataset_dir: Path, out: Path) -> dict:
+    """1 つの LOD3 区分の書き出し。戻り値は根拠の写真の切り抜きの一覧（地物の id → 画像）。"""
     parser = etree.XMLParser(huge_tree=True, remove_blank_text=True)
     src = etree.parse(args.plateau, parser)
     root = src.getroot()
@@ -1546,7 +1744,7 @@ def main(argv=None):
             if cand.exists():
                 rj = json.load(open(cand, encoding="utf-8"))
                 break
-        facets, insts, rep = build_building(b, args.lod, rj)
+        facets, insts, rep = build_building(b, lod, rj)
         built.append((bn, b, rj, facets, insts, rep))
 
     # 2. 航空写真と倒れ込み（高さ 1 m あたりの屋根のずれ）
@@ -1591,7 +1789,7 @@ def main(argv=None):
 
     # 3. 書き出し（屋根に航空写真を貼る）
     app_dir_name = "52365768_bldg_6697_appearance"
-    ds_bldg = Path(args.dataset) / "udx" / "bldg"
+    ds_bldg = Path(dataset_dir) / "udx" / "bldg"
     (ds_bldg / app_dir_name).mkdir(parents=True, exist_ok=True)
     appearance = E(f"{{{NS['app']}}}Appearance")
     E(f"{{{NS['app']}}}theme", appearance, "rgbTexture")
@@ -1605,7 +1803,13 @@ def main(argv=None):
         bel = copy.deepcopy(by_id[gid])
         geo = Geo(b["crs"], V(b["ground_z"]))
         grades = defaultdict(list)
-        rings, roof_rings = write_lod3(bel, b, facets, insts, geo, evidence, args.lod, textured=args.roof_texture, grades=grades)
+        rings, roof_rings, tex_polys = write_lod3(bel, b, facets, insts, geo, evidence, lod, textured=args.roof_texture,
+                                                 grades=grades, wall_textured=args.wall_texture)
+        if not args.no_lod2:
+            f2, rep2 = build_lod2_facets(b, rj)
+            rings2 = write_lod2(bel, b, f2, geo, evidence)
+            rep["lod2"] = {"surfaces": dict(sorted(((kk, sum(1 for f in f2 if f.kind == kk)) for kk in SURF_TAG), key=lambda x: x[0])),
+                           "volume_m3": rep2["volume_m3"], "closed": check_closed(rings2)}
         rep["grades"] = {kk: {g: v.count(g) for g in Q.GRADE_ORDER if v.count(g)} for kk, v in grades.items()}
         rep["roof_lean"] = leans[bn]
         if args.roof_texture:
@@ -1635,6 +1839,8 @@ def main(argv=None):
                     v = 1.0 - (qy - (y0 - 0.5)) / Hp
                     E(APP + "textureCoordinates", tcl, " ".join(f"{a:.6f} {c:.6f}" for a, c in zip(u, v)), ring="#" + rid)
             rep["roof_texture"] = {"image": f"{app_dir_name}/{img_name}", "source": A.SOURCE}
+        if args.wall_texture:
+            rep["wall_texture"] = write_wall_textures(bn, b, tex_polys, appearance, ds_bldg / app_dir_name, app_dir_name)
         rep["closed"] = check_closed(rings)
         rep["plateau_gml_id"] = gid
         rep["surfaces"] = dict(sorted(((kk, sum(1 for f in facets if f.kind == kk)) for kk in SURF_TAG), key=lambda x: x[0]))
@@ -1645,26 +1851,26 @@ def main(argv=None):
         print(f"{bn}: 面 {rep['surfaces']} 窓 {rep['windows']}（省いた {len(rep['openings_skipped'])}） 付属物 {len(insts)} "
               f"体積 {rep['volume_m3']} m3 閉じていない辺 {rep['closed']['unmatched_edges']} "
               f"倒れ込み k={leans[bn]['k']}（{leans[bn]['how']}）")
-    if args.roof_texture:
+    if args.roof_texture or args.wall_texture:
         am = E(APP + "appearanceMember", model)
         am.append(appearance)
 
-    tag = args.lod.replace(".", "")
+    tag = lod.replace(".", "")
     gml_path = ds_bldg / "52365768_bldg_6697_op.gml"
     etree.ElementTree(model).write(str(gml_path), xml_declaration=True, encoding="UTF-8", pretty_print=True)
     # PLATEAU の配布物と同じ並び（udx/bldg・codelists・schemas）にする。codeSpace は ../../codelists/… を指す
     import shutil
 
     from . import CODELISTS_DIR, XSD_DIR
-    ds = Path(args.dataset)
+    ds = Path(dataset_dir)
     shutil.copytree(CODELISTS_DIR, ds / "codelists", dirs_exist_ok=True)
     shutil.copytree(XSD_DIR / "iur", ds / "schemas" / "iur", dirs_exist_ok=True)
     json.dump(evidence, open(out / f"evidence_lod{tag}.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     # 表示画面が読む：地物の id → 根拠の写真の切り抜き（公開版の写真から。thumbs/ からの相対パス）
     thumbs = {k: v["thumbs"] for k, v in evidence.items() if v.get("thumbs")}
-    json.dump(thumbs, open(out / "thumbs.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     json.dump(reports, open(out / f"report_lod{tag}.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1, default=str)
     print("書き出し:", gml_path)
+    return thumbs
 
 
 if __name__ == "__main__":
