@@ -61,6 +61,7 @@ def test_aliked_lightglue_matches_and_writes_db(tmp_path):
 
 
 def test_rootsift_default_unchanged(tmp_path):
+    pytest.importorskip("pycolmap")     # 一括復元（register-sfm）は pycolmap が要る。PLATEAU 版の環境には入れていない
     assert inspect.signature(sfm.register_sfm).parameters["features"].default == "rootsift"
     assert inspect.signature(sfm.register_models).parameters["features"].default == "rootsift"
     assert sfm.FEATURES[0] == "rootsift"

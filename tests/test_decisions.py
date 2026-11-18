@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from recorder import agents, assets, decisions, schema
+from recorder import agents, decisions, schema
 
 
 def w(p, o):
@@ -25,7 +25,6 @@ def env(tmp_path, monkeypatch):
     w(tmp_path / "catalog.json", cat)
     monkeypatch.setattr(decisions, "DECISIONS", tmp_path / "decisions.json")
     monkeypatch.setattr(decisions, "VOCAB", tmp_path / "vocab.json")
-    monkeypatch.setattr(assets, "CATALOG", tmp_path / "catalog.json")
     return tmp_path
 
 
@@ -62,14 +61,6 @@ def test_composite_primitives(env):
     assert len(e) == 2 and any("wedge" in x for x in e) and any("cut" in x for x in e)
 
 
-def test_asset_decision(env):
-    assert hook([{"type": "asset", "asset": "ok"}, {"type": "box", "material": "asset:ok"}]) == []
-    e = hook([{"type": "asset", "asset": "nodec"}])
-    assert e and "決定（decision）がありません" in e[0]
-    assert hook([{"type": "box", "material": "asset:denied"}])
-    assert "台帳" in hook([{"type": "box", "material": "asset:ghost"}])[0]
-
-
 def test_interior(env):
     e = decisions.validate_building_hook({"interior": {"rooms": []}})
     assert e and "interior" in e[0]
@@ -99,32 +90,6 @@ def test_add_decision_numbering(env):
 def test_vocab_list_lines(env):
     lines = decisions.vocab_list_lines()
     assert len(lines) == 5 and any("louver" in x and "承認されていない" in x for x in lines)
-
-
-def test_assets_fetch_refuses_without_approval(env, monkeypatch):
-    def no_net(*a, **k):
-        raise AssertionError("ネットに出た")
-    monkeypatch.setattr(assets, "_get", no_net)
-    cat = {"items": [
-        {"id": "nodec", "kind": "texture", "what": "w", "source": "polyhaven", "url": "u", "license": "CC0-1.0",
-         "license_url": "u", "file": "polyhaven/a", "maps": {"color": "c.jpg"}, "tile_m": [1, 1]},
-        {"id": "denied", "decision": "D-0002", "kind": "texture", "what": "w", "source": "polyhaven", "url": "u", "license": "CC0-1.0",
-         "license_url": "u", "file": "polyhaven/b", "maps": {"color": "c.jpg"}, "tile_m": [1, 1]},
-        {"id": "ghost", "decision": "D-9999", "kind": "texture", "what": "w", "source": "polyhaven", "url": "u", "license": "CC0-1.0",
-         "license_url": "u", "file": "polyhaven/c", "maps": {"color": "c.jpg"}, "tile_m": [1, 1]}]}
-    r = assets.fetch(cat, store=env / "store", log=lambda *_: None)
-    assert r["ok"] == [] and set(r["fail"]) == {"nodec", "denied", "ghost"}
-    assert all("進行役の決定が要る" in v for v in r["fail"].values())
-
-
-def test_add_item(env):
-    item = {"id": "new", "kind": "texture", "what": "w", "source": "polyhaven", "url": "u", "license": "CC0-1.0",
-            "license_url": "u", "file": "polyhaven/n", "maps": {"color": "c.jpg"}, "tile_m": [1, 1]}
-    with pytest.raises(ValueError, match="進行役の決定が要る"):
-        assets.add_item(dict(item), cat={"items": []}, save=False)
-    cat = {"items": []}
-    assets.add_item({**item, "decision": "D-0001"}, cat=cat, save=False)
-    assert assets.item(cat, "new")["decision"] == "D-0001"
 
 
 def test_detect_events_marks_decided(tmp_path):

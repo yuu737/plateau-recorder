@@ -204,26 +204,7 @@ def validate_building_hook(b: dict) -> list[str]:
             elif isinstance(o, list):
                 stack.extend(o)
 
-    # アセット（material: asset:<id> と type: asset）
-    ids: set[str] = set()
-    for _root, parts in sources:
-        _walk_assets(parts, ids)
-    if ids:
-        from . import assets
-
-        try:
-            cat = assets.load_catalog()
-        except (OSError, ValueError):
-            cat = {"items": []}
-        by_id = {it.get("id"): it for it in cat.get("items", []) if isinstance(it, dict)}
-        for aid in sorted(ids):
-            it = by_id.get(aid)
-            if it is None:
-                errs.append(f"アセット {aid} は台帳（data/assets/catalog.json）に無い（{NEED}：recorder agent decide --kind asset …）")
-                continue
-            p = problem(it.get("decision"), f"アセット {aid}", doc)
-            if p:
-                errs.append(f"{p}（{NEED}：recorder agent decide --kind asset …）")
+    # アセット（CC0 の置物・質感）は PLATEAU 版では台帳を持たない（LOD3 に入れない）ので確かめない
 
     if b.get("interior"):
         check_type("interior", "interior", "内装の欄")

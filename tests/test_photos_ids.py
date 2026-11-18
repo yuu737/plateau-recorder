@@ -109,18 +109,6 @@ def test_short_names_are_device_independent_and_unique():
     assert a.startswith("photo_") and a != photos.short_name("図書館", ascii_only=True)
 
 
-def test_photoproj_short_id_not_collapsed():
-    from recorder import photoproj
-    assert photoproj.short_id("IMG_0001") != photoproj.short_id("IMG_0002")
-    assert photoproj.short_id("20261107_150551") != photoproj.short_id("20261108_093000")
-
-
-def test_evidence_entity_name_japanese_not_all_photo():
-    from recorder import evidence
-    assert evidence.entity_name("本部棟正面") != evidence.entity_name("図書館南")
-    assert evidence.entity_name("P223_本部棟の長辺") == "P223"
-
-
 def test_registry_lines_lookup_does_not_take_other_device_tail(tmp_path):
     from recorder import registry
     d = tmp_path / "compare"

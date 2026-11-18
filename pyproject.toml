@@ -1,7 +1,7 @@
 [project]
-name = "campus-recorder"
+name = "plateau-recorder"
 version = "0.1.0"
-description = "写真から根拠付きの設計図と歩ける3Dキャンパスを起こす道具（Built with Claude: Japan 2026）"
+description = "スマホの写真から、値ごとの確かさ（σ）と根拠を持つ PLATEAU 仕様の LOD3 を作る道具（campus-recorder から派生）"
 requires-python = ">=3.13"
 dependencies = ["numpy", "pillow"]
 
@@ -20,7 +20,6 @@ packages = ["recorder"]
 testpaths = ["tests"]
 pythonpath = ["."]
 markers = [
-    "blender: Blender 5.2（環境変数 BLENDER）を起動する。CI では外す",
     "browser: headless の Edge / Chrome を起動する。CI では外す",
     "gpu: torch・学習済みの重み（Depth Pro・ALIKED/LightGlue・GeoCalib）が要る。CI では外す",
 ]

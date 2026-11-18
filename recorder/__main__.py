@@ -16,18 +16,11 @@
                                                  片端ずつの 2 枚を階高で揃えて横につなぐ（決まらなければ ambiguous）
   python -m recorder site confirm <id> <status> --by 名前 [--name 新しい名前] [--note ...]
                                                  職員の確認を敷地 JSON に書く
-  python -m recorder site link-box <棟|敷地の物> <箱id> --why 理由 [--ask 撮影依頼の文]
-  python -m recorder site link-box <箱id> --to 相手 --to 相手 … --why 理由   相手の平面の和で 7 割以上なら置き換えの印
-                                                 PLATEAU の箱を棟に結ぶ（足元の 7 割以上が輪郭の中の時だけ。足りなければ撮影依頼）
-  python -m recorder assets list                CC0 アセットの台帳（data/assets/catalog.json）と取得状況
-  python -m recorder assets fetch [id ...]      台帳のアセットを assets/ に取る（差分だけ。sha256 を台帳に書く）
   python -m recorder photos register <写真id> --building <json> --face <面> [--from-rectify F --compare C] [--pose P]
   python -m recorder photos register --from-existing out/<棟> --building <json>
                                                  写真を面に登録（data/photos/registry.json）。以後は recheck が自動で重ね直す
-  python -m recorder recheck <json> [--photos ...] [--fast] [--no-render]
+  python -m recorder recheck <json> [--photos ...] [--fast]
                                                  登録済みの写真を全部、今の棟 JSON に重ね直し、線ごとのずれを一覧（out/<棟>/recheck/<日時>/）
-  python -m recorder photoproj <json> [--photos id,...] [--fast] [--keep-renders]
-                                                 登録済みの写真を模型に投影し、写真どうしの食い違い（縁の強さ）から形の悪い所を悪い順に（out/<棟>/photoproj/<日時>/）
   python -m recorder agent tasks <id> [--photos F]  各工程の依頼文を out/<id>/agent_tasks.json・.md に（API とサブエージェントで同じ文）
   python -m recorder agent preflight <id> [--call-models]  再開の前の点検（落ちる要素があれば終了コード 1）
   python -m recorder agent log <id> --step S [--model opus --seconds N --tokens N --note ...]
@@ -35,8 +28,8 @@
   python -m recorder hypotheses <json> [--list]  仮説（basis: hypothesis）の一覧：面・場所・値・規則・出所
   python -m recorder hypotheses <json> --drop [--face F] --reason "…"
                                                  仮説を unknown に戻す（JSON と history、design スクリプトの HYPOTHESES_OFF に追記）
-  python -m recorder validate|draw <json> --no-hypotheses / model build <json> --no-hypotheses
-                                                 仮説を外した状態で検証・描画・模型（out/<id>/no_hypotheses/）
+  python -m recorder validate|draw <json> --no-hypotheses
+                                                 仮説を外した状態で検証・描画（out/<id>/no_hypotheses/）
   python -m recorder coverage <json>             面ごとの被覆図（登録済みの写真が覆う範囲、未撮影は灰色）と撮影依頼の候補
 """
 
@@ -49,7 +42,25 @@ from pathlib import Path
 from . import drawing, schema
 
 
+LOD3_CMDS = {"build": "build", "check": "gmlcheck", "render": "render", "schemas": "schemas"}
+
+
+def _lod3(rest: list[str]) -> int:
+    """recorder lod3 build|check|render|schemas …（PLATEAU 仕様の LOD3。recorder/lod3/ の各モジュールの main に渡す）。"""
+    import importlib
+
+    if not rest or rest[0] not in LOD3_CMDS:
+        print("使い方: recorder lod3 build [--buildings …] [--lod 3.0] ／ check <gml> ／ render <gml> ／ schemas")
+        return 2
+    mod = importlib.import_module(f"recorder.lod3.{LOD3_CMDS[rest[0]]}")
+    r = mod.main(rest[1:]) if rest[0] != "schemas" else mod.main()
+    return int(r or 0)
+
+
 def main(argv: list[str] | None = None) -> int:
+    args0 = sys.argv[1:] if argv is None else list(argv)
+    if args0[:1] == ["lod3"]:
+        return _lod3(args0[1:])
     ap = argparse.ArgumentParser(prog="recorder")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -89,22 +100,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--top", type=int, default=10, help="複製の多い観察の上位いくつを出すか")
     p.add_argument("--json", action="store_true", help="JSON で出す（measured の直接／鎖／個数と観察の件数）")
 
-    p = sub.add_parser("run", help="validate → draw → model → overlay → run_report.json を 1 回で")
+    p = sub.add_parser("run", help="validate → draw → run_report.json を 1 回で")
     p.add_argument("file")
     p.add_argument("--out", default=None)
     p.add_argument("--fast", action="store_true")
     p.add_argument("--skip-model", action="store_true")
     p.add_argument("--blender", default=None)
-
-    p = sub.add_parser("model", help="棟 JSON から Blender で模型を組み、四面図・鳥瞰・glb を出す")
-    msub = p.add_subparsers(dest="model_cmd", required=True)
-    q = msub.add_parser("build")
-    q.add_argument("file")
-    q.add_argument("--out", default=None)
-    q.add_argument("--blender", default=None, help="Blender 5.2 のパス（無ければ環境変数 BLENDER）")
-    q.add_argument("--fast", action="store_true", help="小さめの描画")
-    q.add_argument("--cameras", nargs="*", default=None, help="写真の視点（photos pose が出した *_pose.json）。同じ視点で描く")
-    q.add_argument("--no-hypotheses", action="store_true", help="仮説を外した模型（既定の出力 out/<id>/no_hypotheses/）")
 
     p = sub.add_parser("site")
     ssub = p.add_subparsers(dest="site_cmd", required=True)
@@ -112,23 +113,6 @@ def main(argv: list[str] | None = None) -> int:
     q.add_argument("--campus", default=None)
     q.add_argument("--plateau", default=None, help="PLATEAU の zip。省略すると敷地 JSON の sources.plateau_zip")
     q.add_argument("--no-plateau", action="store_true")
-    q = ssub.add_parser("export-web", help="Web 3D 用に web/data/site.json と glb を書き出す")
-    q.add_argument("--campus", default=None)
-    q.add_argument("--with-coverage", action="store_true", help="out/<棟>/coverage.json の未撮影の範囲（灰色だけ。写真は出さない）を足す")
-    q.add_argument("--out", default=None, help="書き出し先（既定 web/。<out>/data/site.json に書く。試しは一時フォルダへ）")
-    q = ssub.add_parser("objects", help="敷地の物（objects：通路橋・甲板・段・置物）の検証・検収の数字・glb の書き出し")
-    q.add_argument("action", choices=["check", "export"])
-    q.add_argument("--campus", default=None)
-    q.add_argument("--out", default=None, help="export の書き出し先（<out>/data/models/site_objects.glb）。必須")
-    q = ssub.add_parser("link-box", help="PLATEAU の箱を棟（棟 JSON の輪郭）か敷地の物に結ぶ。重なりが 7 割未満なら結ばず撮影依頼")
-    q.add_argument("args", nargs="+", metavar="[相手] 箱id",
-                   help="`<相手> <箱id>`（相手は棟 id か敷地の物の id）か、--to を使う時は `<箱id>` だけ。箱 id は先頭の一部でよい")
-    q.add_argument("--to", action="append", default=[],
-                   help="相手（棟 id か敷地の物の id）。何度でも。複数なら相手の平面の和で 7 割以上の時に結ぶ（replaced_by の並び）")
-    q.add_argument("--why", required=True, help="結ぶ理由（観察票・写真など）。敷地 JSON に残す")
-    q.add_argument("--by", default="recorder site link-box")
-    q.add_argument("--ask", default="", help="結べなかった時の撮影依頼の文")
-    q.add_argument("--campus", default=None)
     q = ssub.add_parser("confirm")
     q.add_argument("id")
     q.add_argument("status", choices=["confirmed", "renamed", "removed", "new"])
@@ -283,11 +267,6 @@ def main(argv: list[str] | None = None) -> int:
     q.add_argument("--no-register", action="store_true", help="台帳に書かない（結果と重ね画像だけ）")
     q.add_argument("--truth", action="store_true", help="登録済みの写真も試し、既知の視点との差を出す（台帳は書かない）")
     q.add_argument("--registry", default=None)
-    q = psub.add_parser("depth", help="写真 1 枚の深さ m（Depth Pro か Depth Anything V2 Small）→ out/<棟>/depth/。--eval で登録済みの写真で評価")
-    q.add_argument("building", help="棟 JSON")
-    q.add_argument("--photos", default=None, help="写真 id（カンマ区切り）")
-    q.add_argument("--model", default="depth_pro", choices=["depth_pro", "da2_small"])
-    q.add_argument("--eval", action="store_true", help="台帳の登録済みの写真全部で評価し out/experiments/depth_eval.json に書く")
     q = psub.add_parser("roof", help="航空写真（国土地理院 z18）で屋上の縁・倒れ込み・設備を読む")
     q.add_argument("building", help="棟 JSON")
     q.add_argument("--out-dir", default=None, help="roof.json・roof_aerial.png の出力先（省略時は out/<棟id>/）")
@@ -298,17 +277,6 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("file")
     p.add_argument("--photos", nargs="*", default=None, help="写真 id（省略で全部）")
     p.add_argument("--fast", action="store_true", help="描画を小さく")
-    p.add_argument("--no-render", action="store_true", help="線のずれだけ（Blender を使わない）")
-    p.add_argument("--blender", default=None)
-    p.add_argument("--registry", default=None)
-
-    p = sub.add_parser("photoproj", help="登録済みの写真を模型に投影し、写真どうしの食い違いから形の悪い所を一覧にする")
-    p.add_argument("file")
-    p.add_argument("--photos", default=None, help="写真 id（カンマ区切り。頭だけでも可。省略で全部）")
-    p.add_argument("--fast", action="store_true", help="描画を写真の 1/8 に（通常 1/4）")
-    p.add_argument("--keep-renders", action="store_true", help="Blender の P・ID（render/*.npz）を残す")
-    p.add_argument("--reuse-renders", default=None, help="前の --keep-renders の render/ を使う（Blender を動かさない。棟 JSON を直した後は使わない）")
-    p.add_argument("--blender", default=None)
     p.add_argument("--registry", default=None)
 
     p = sub.add_parser("coverage", help="面ごとの被覆図と撮影依頼の候補")
@@ -386,42 +354,11 @@ def main(argv: list[str] | None = None) -> int:
     vsub = p.add_subparsers(dest="vocab_cmd", required=True)
     vsub.add_parser("list")
 
-    p = sub.add_parser("assets", help="CC0 アセットの台帳と取得")
-    xsub = p.add_subparsers(dest="assets_cmd", required=True)
-    q = xsub.add_parser("list")
-    q.add_argument("--kind", default=None, choices=["model", "texture", "hdri"])
-    q = xsub.add_parser("fetch")
-    q.add_argument("ids", nargs="*")
-
-    # 証拠ビューア（Rerun の .rrd。11/6 追加。ここ 1 か所で引数と実行をまとめる）
-    from . import evidence as _evidence
-    _evidence.add_args(sub.add_parser("evidence", help="写真の視点・目印の対応・再投影・根拠の件数を Rerun の .rrd に（out/<棟>/evidence.rrd）"))
-    if (sys.argv[1:] if argv is None else list(argv))[:1] == ["evidence"]:
-        return _evidence.run_cli(ap.parse_args(argv))
-
-    # 進捗報告（棟ごとに 1 ページの HTML。11/6 追加。ここ 1 か所で引数と実行をまとめる）
-    from . import report as _report
-    _report.add_args(sub.add_parser("report", help="進捗報告：写真 → 立面図 → 証拠 → 模型 → 歩ける 3D → まだ無い物 を 1 ページに（out/<棟>/report.html）"))
-    if (sys.argv[1:] if argv is None else list(argv))[:1] == ["report"]:
-        return _report.run_cli(ap.parse_args(argv))
-
-    # 進捗報告の絵を道具で撮る（証拠ビューア・歩く画面。11/6 追加。ここ 1 か所で引数と実行をまとめる）
-    from . import shots as _shots
-    _shots.add_args(sub.add_parser("shots", help="進捗報告の絵を撮る：証拠ビューア（evidence_<種>.png）と歩く画面（walk.png）"))
-    if (sys.argv[1:] if argv is None else list(argv))[:1] == ["shots"]:
-        return _shots.run_cli(ap.parse_args(argv))
-
-    # 職員の画面の受付（ローカルのサーバ。11/6 追加。ここ 1 か所で引数と実行をまとめる）
-    from . import serve as _serve
-    _serve.add_args(sub.add_parser("serve", help="職員の画面 web/staff.html の受付：写真の取り込み → 振り分け → 棟ごとの pipeline の起動と進捗（既定 127.0.0.1:8766）"))
-    if (sys.argv[1:] if argv is None else list(argv))[:1] == ["serve"]:
-        return _serve.run_cli(ap.parse_args(argv))
-
-    # 仕分け係の当たり率（期間前の台帳の棟と比べる。11/6 追加。ここ 1 か所で引数と実行をまとめる）
-    from . import shiwake_eval as _shiwake_eval
-    _shiwake_eval.add_args(sub.add_parser("shiwake-eval", help="仕分け係の当たり率：仕分け係が確定した棟（面）と期間前の台帳の棟の一致・不一致・判定不能（out/shiwake_eval.json）"))
-    if (sys.argv[1:] if argv is None else list(argv))[:1] == ["shiwake-eval"]:
-        return _shiwake_eval.run_cli(ap.parse_args(argv))
+    # 写真 1 枚ずつの面の画像・窓の検出・写真をまたいだ突き合わせ（PLATEAU 版。facade.py）
+    from . import facade as _facade
+    _facade.add_args(sub.add_parser("facade", help="写真 1 枚ずつ面に正面化（合成しない）→ 窓の検出 → 写真をまたいで束ねて値と σ → 棟 JSON の窓と比較（out/facade/<棟>/<面>/）"))
+    if (sys.argv[1:] if argv is None else list(argv))[:1] == ["facade"]:
+        return _facade.run_cli(ap.parse_args(argv))
 
     # 測量：メジャーからタイルの周期・面の周期の一様・根拠の鎖（K-101。11/8 追加。ここ 1 か所で引数と実行をまとめる）
     from . import measure as _measure
@@ -449,14 +386,13 @@ LEDGER_WRITERS = {
     # photos import も入れない：EXIF・縮小・顔の検出は鍵の外、索引は import_photos が鍵を取って差分だけ書く（11/8 F3）
     # pnp・register-chain・register-sfm・unregister・exclude は入れない：計算は鍵の外、登録台帳の書き込みは
     # registry.save_registry が鍵を取って読み直し、差分だけ書く（11/8 J-012）
-    ("site", "export-web"), ("site", "build"), ("site", "confirm"), ("site", "link-box"), ("campus", "init"),
-    ("agent", "decide"), ("assets", "fetch"),
+    ("site", "build"), ("site", "confirm"), ("campus", "init"),
+    ("agent", "decide"),
 }
 
 
 def _ledger_need(a) -> str | None:
-    sub = {"photos": "photos_cmd", "site": "site_cmd", "campus": "campus_cmd", "agent": "agent_cmd",
-           "assets": "assets_cmd"}.get(a.cmd)
+    sub = {"photos": "photos_cmd", "site": "site_cmd", "campus": "campus_cmd", "agent": "agent_cmd"}.get(a.cmd)
     key = (a.cmd, getattr(a, sub, None) if sub else None)
     return f"recorder {key[0]} {key[1]}" if key in LEDGER_WRITERS else None
 
@@ -476,13 +412,11 @@ def _dispatch(a) -> int:
         return _campus(a)
     if a.cmd == "photos":
         return _photos(a)
-    if a.cmd == "assets":
-        return _assets(a)
     if a.cmd == "recheck":
         from . import recheck, registry
 
         reg = registry.load_registry(Path(a.registry)) if a.registry else None
-        summ, out = recheck.recheck(Path(a.file), a.photos, a.fast, not a.no_render, registry=reg, blender=a.blender)
+        summ, out = recheck.recheck(Path(a.file), a.photos, a.fast, False, registry=reg)
         if not summ["photos"]:
             print("登録済みの写真がありません（recorder photos register）")
         for p in summ["photos"]:
@@ -490,27 +424,6 @@ def _dispatch(a) -> int:
             print(f"{p['photo'][:34]:<34} {p['face']:<5} 面 {'合格' if p['pass_face'] else ('不合格' if p['pass_face'] is False else '—')}"
                   f" 最大 {wf['diff_m']:+.2f} m（{wf['what']}）" if wf else f"{p['photo'][:34]:<34} {p['face']:<5} 面 —", end="")
             print(f" / 部品 最大 {wp['diff_m']:+.2f} m（{wp['what']}）" if wp else " / 部品 —", f" 線 {p['n_found']}/{p['n_lines']}")
-        for w in summ["warnings"]:
-            print("注意:", w)
-        for r in summ.get("renders", []):
-            print(f"重ね: {r.get('overlay') or r.get('reason')}")
-        print(f"一覧: {out / 'summary.md'}")
-        return 0
-    if a.cmd == "photoproj":
-        from . import photoproj, registry
-
-        reg = registry.load_registry(Path(a.registry)) if a.registry else None
-        ph = [x.strip() for x in a.photos.split(",") if x.strip()] if a.photos else None
-        summ, out = photoproj.photoproj(Path(a.file), ph, a.fast, a.blender, reg, keep_renders=a.keep_renders,
-                                        reuse=Path(a.reuse_renders) if a.reuse_renders else None)
-        for k, r in enumerate(summ["ranking"][:10]):
-            print(f"{k + 1:>2}. {r['id']:<30} {r['kind']}  score {r['score']:.2f}  平均 {r['mean']:.3f}  p90 {r['p90']:.3f}  （{r['pair']}）")
-        for c in summ.get("cells", [])[:5]:
-            print(f"    升: {c['face']} s {c['s'][0]:.0f}–{c['s'][1]:.0f} m z {c['z'][0]:.0f}–{c['z'][1]:.0f} m  score {c['score']:.2f}（{c['pair']}）")
-        for r in summ["suspects"][:5]:
-            print(f"怪しい（1 枚の所）: {r['id']} +{r['increase']:.3f}（{photoproj.short_id(r['photo'])} {r['view']}）")
-        for r in summ.get("unsupported", [])[:5]:
-            print(f"縁の裏付けなし: {r['id']} {r['support']:.2f}（{photoproj.short_id(r['photo'])}）")
         for w in summ["warnings"]:
             print("注意:", w)
         print(f"一覧: {out / 'summary.md'}")
@@ -594,10 +507,10 @@ def _dispatch(a) -> int:
     if a.cmd == "run":
         from . import run as runner
 
-        r = runner.run(Path(a.file), Path(a.out) if a.out else None, a.fast, a.skip_model, a.blender)
+        r = runner.run(Path(a.file), Path(a.out) if a.out else None, a.fast)
         for st in r["steps"]:
             print(f"{'OK' if st['ok'] else 'NG'} {st['name']:<9} {st['seconds']}s  {st['error']}")
-        from .evidence import observations, observations_line
+        from .observations import observations, observations_line
 
         # 値は今まで通り run.count_statuses の数え方（status と value を持つ物）。観察はその値を (状態, 方法, 根拠, 種類) で束ねた数
         o = observations(schema.load_building(a.file), values_only=True)
@@ -606,7 +519,7 @@ def _dispatch(a) -> int:
         return 0 if r["ok"] else 1
 
     if a.cmd == "counts":
-        from .evidence import OBS_NOTE, observations, observations_line
+        from .observations import OBS_NOTE, observations, observations_line
 
         if a.json:   # measured を直接（メジャーで直接読んだ区間）／鎖／個数に分ける（K-101）
             import json as _json
@@ -639,29 +552,6 @@ def _dispatch(a) -> int:
     if a.cmd == "unknowns":
         for u in schema.unknowns(schema.load_building(a.file)):
             print(u)
-        return 0
-
-    if a.cmd == "model":
-        from . import model
-
-        b = schema.load_building(a.file)
-        src, out_dir = Path(a.file), Path(a.out) if a.out else None
-        if a.no_hypotheses:
-            b, dropped = schema.drop_hypotheses(b)
-            out_dir = out_dir or Path("out") / b["id"] / "no_hypotheses"
-            out_dir.mkdir(parents=True, exist_ok=True)
-            src = out_dir / f"{b['id']}.json"
-            schema.save_building(b, src)
-            print(f"仮説を外して組む（{len(dropped)} 値を unknown に）: {src}")
-        errs = schema.validate_building(b)
-        if errs:
-            print("規約違反があるので組みません:")
-            for e in errs:
-                print(f"   - {e}")
-            return 1
-        out = model.build(src, out_dir, a.blender, a.fast, [Path(c) for c in a.cameras] if a.cameras else None)
-        print(f"模型: {out}")
-        print(f"四面図: {model.sheet(out, b)}")
         return 0
 
     return 2
@@ -1087,20 +977,6 @@ def _photos(a) -> int:
             print(f"  {pid[:40]:<40} {why}")
         print(f"台帳: {rp}")
         return 0
-    if a.photos_cmd == "depth":
-        from . import depth
-        from .schema import load_building
-
-        bid = load_building(a.building)["id"]
-        if a.eval:
-            r = depth.evaluate([a.model])
-            m = r["models"][a.model]
-            print(f"{a.model}: {r['n_photos']} 枚 写真ごとの比の中央値 {m['grid']['photo_medians']} → {m['grid']['judge']}")
-        for ph in [x.strip() for x in (a.photos or "").split(",") if x.strip()]:
-            s = depth.predict(ph, a.model, bid)
-            print(f"{s['photo']}: 深さの中央値 {s['depth_m']['median']} m 焦点 {s['focal_px']} px（EXIF 比 {s['focal_ratio']}）"
-                  f" {s['seconds']} s {s['device']} → {s['npz']}")
-        return 0
     if a.photos_cmd == "roof":
         from . import roof
 
@@ -1176,59 +1052,6 @@ def _site(a) -> int:
             print("   - " + e)
         return 1 if errs else 0
 
-    if a.site_cmd == "export-web":
-        r = site.export_web(a.campus or site.default_campus(), with_coverage=a.with_coverage,
-                            web_dir=Path(a.out) if a.out else None)
-        print(f"Web 用: {r['path']}  箱 {r['boxes']} 件、模型 {r['models']}、地面格子 {r['grid']}（標高の欠けを近傍で埋めた割合 {r['nan_filled']:.1%}）")
-        return 0
-
-    if a.site_cmd == "objects":
-        from . import site_objects as so
-        doc = json.loads((site.DATA_SITE / f"{a.campus or site.default_campus()}.json").read_text(encoding="utf-8"))
-        bs = so.load_buildings(so.ends_buildings(doc))
-        errs, warns = so.validate_objects(doc, bs, so.load_catalog_ids())
-        for e in errs:
-            print("   - [誤り] " + e)
-        for w in warns:
-            print("   - [警告] " + w)
-        if a.action == "check":
-            for it in so.check_objects(doc, bs):
-                print(f"{'OK ' if it['ok'] else 'NG '} {it['what']}：差 {it['diff_m']:+.2f} m（± {it['tol_m']:.2f}）")
-            print(f"敷地の物 {len(so.objects_of(doc))} 件、誤り {len(errs)}、警告 {len(warns)}")
-            return 1 if errs else 0
-        if not a.out:
-            print("--out が要る（疑似本番の web/data/ は上書きしない）")
-            return 2
-        r = so.export_web_objects(doc, Path(a.out) / "data", bs)
-        print(f"glb: {r['glb']}（三角形 {r['tris']}）")
-        for s in r["skipped"]:
-            print("   - 描かない: " + s)
-        return 1 if r["errors"] else 0
-
-    if a.site_cmd == "link-box":
-        path = site.DATA_SITE / f"{a.campus or site.default_campus()}.json"
-        doc = json.loads(path.read_text(encoding="utf-8"))
-        if a.to:
-            if len(a.args) != 1:
-                print("エラー: --to を使う時は箱 id を 1 つだけ書く（link-box <箱id> --to 棟 --to 敷地の物 …）")
-                return 2
-            target, box = (a.to[0] if len(a.to) == 1 else a.to), a.args[0]
-        elif len(a.args) == 2:
-            target, box = a.args
-        else:
-            print("エラー: link-box <相手> <箱id> か link-box <箱id> --to 相手 [--to 相手 …]")
-            return 2
-        r = site.link_box(doc, target, box, a.why, a.by, ask=a.ask)
-        for k, v in r["overlap"]["by"].items():
-            print(f"   {k}: 箱の足元 {r['overlap']['box_area_m2']} m² のうち {v['overlap_m2']} m²（{v['inside_ratio']:.1%}）が {k if isinstance(r['target'], list) else r['target']} の中")
-        path.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
-        tn = r["target"] if isinstance(r["target"], str) else "＋".join(r["target"])
-        msg = {"linked": f"結び付けた：{r['box']} → {r['target']} の plateau_parts（前は {r['held_by']}）",
-               "replaced": f"置き換えの印：{r['box']} は {tn} に置き換わった（export-web で描かない）",
-               "request": f"結ばない（一番大きい重なり {r['overlap']['best']:.1%} < {r['min_ratio']:.0%}）。撮影依頼 {r.get('request')} を敷地 JSON の requests に書いた"}
-        print(msg[r["outcome"]])
-        return 0
-
     if a.site_cmd == "confirm":
         path = site.DATA_SITE / f"{a.campus or site.default_campus()}.json"
         doc = json.loads(path.read_text(encoding="utf-8"))
@@ -1267,36 +1090,6 @@ def _campus(a) -> int:
     print("\n".join(site.campus_check_lines(res)))
     print(f"（{site.OUT_SITE / 'campus_check.json'} にも書きました）")
     return 0 if res["ok"] else 1
-
-
-def _assets(a) -> int:
-    from . import assets
-
-    cat = assets.load_catalog()
-    errs = assets.validate_catalog(cat)
-    if errs:
-        print("台帳の規約違反:")
-        for e in errs:
-            print(f"   - {e}")
-        return 1
-    if a.assets_cmd == "list":
-        for it in cat["items"]:
-            if a.kind and it["kind"] != a.kind:
-                continue
-            try:
-                assets.resolve(it["id"], cat)
-                st = "取得済み"
-            except FileNotFoundError:
-                st = "未取得"
-            size = " x ".join(f"{v:g}" for v in it.get("size_m") or it.get("tile_m") or [])
-            print(f"{it['id']:<16} {it['kind']:<8} {it['source']:<10} {st:<5} {size:<20} {it['what']}")
-        for nf in cat.get("not_found", []):
-            print(f"{'(該当なし)':<16} {nf['what']} → {nf['fallback']}")
-        return 0
-    r = assets.fetch(cat, a.ids or None)
-    assets.save_catalog(cat)
-    print(f"取得 {len(r['ok'])} / 変化なし {len(r['skip'])} / 失敗 {len(r['fail'])}")
-    return 1 if r["fail"] else 0
 
 
 if __name__ == "__main__":

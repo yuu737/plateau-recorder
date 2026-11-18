@@ -1,6 +1,7 @@
 """棟 1 つについて、判断なしで回せる工程を 1 コマンドにまとめる。
 
-  validate → draw → model build → （poses があれば）photos overlay → run_report.json
+  validate → draw → run_report.json（PLATEAU 版。Blender の模型と写真への重ね描きは削除した。
+  LOD3 の書き出しは recorder.lod3 が受け持つ）
 既存のコマンドが呼ぶ関数を直接呼ぶ。落ちた工程は報告に理由を残し、後続の工程は止める。
 """
 
@@ -78,54 +79,10 @@ def run(building_json: Path, out: Path | None = None, fast: bool = False, skip_m
             p.write_text(svg, encoding="utf-8")
             s["outputs"].append(str(p))
 
-    # poses は出力先の poses/ を優先し、無ければ既定の out/<id>/poses/ を使う
-    pdir = next((d for d in (out / "poses", Path("out") / b["id"] / "poses") if d.exists()), None)
-    poses = sorted(pdir.glob("*_pose.json")) if pdir else []
-
-    def do_model(s):
-        from . import model
-
-        model.build(building_json, out, blender, fast, poses or None)
-        for n in ("persp_shaded.png", "sheet.png", f"{b['id']}.glb", f"{b['id']}.blend", "views.json"):
-            if (out / n).exists():
-                s["outputs"].append(str(out / n))
-        sh = model.sheet(out, b)
-        s["outputs"].append(str(sh))
-        s["cameras"] = [str(p) for p in poses]
-
-    def do_overlay(s):
-        from . import pose
-
-        bad = []
-        for pj in poses:
-            d = json.loads(pj.read_text(encoding="utf-8"))
-            photo = Path(d.get("photo", ""))
-            stem = photo.stem
-            render = out / f"view_photo_{stem}.png"
-            if not photo.exists() or not render.exists():
-                bad.append(f"{stem}: 写真または描画が無い（{photo} / {render.name}）")
-                continue
-            s["outputs"].append(str(pose.overlay(photo, render, out / f"overlay_{stem}.png")))
-        if bad:
-            s["error"] = "; ".join(bad)
-            return False
-
     ok = step("validate", do_validate)
     if ok:
         ok = step("draw", do_draw)
-    if ok and not skip_model:
-        ok = step("model", do_model)
-        if ok and poses:
-            ok = step("overlay", do_overlay)
     report["ok"] = ok
-    # 進捗報告（out/<棟>/report.html）。段の状態は生成物の有無で決まるので、途中で止まっても出す。失敗しても run の合否は変えない
-    try:
-        from . import report as _report
-
-        rp = _report.run(building_json, out / "report.html")
-        report["progress_report"] = {"html": rp["html"], "stages": {k: v["status"] for k, v in rp["stages"].items()}}
-    except Exception as e:  # noqa: BLE001
-        report["progress_report"] = {"error": f"{type(e).__name__}: {e}"}
     report["seconds_total"] = round(time.time() - t_all, 2)
     (out / "run_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
     return report

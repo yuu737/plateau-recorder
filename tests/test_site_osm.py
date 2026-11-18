@@ -160,9 +160,3 @@ def test_new_building_defaults_from_site():
     assert b["campus"] == "tokyo-x" and b["crs"]["epsg"] == 6677 and b["crs"]["origin_lat"] == crs["origin_lat"]
     b2 = new_building("a", "A", campus="other", crs={"epsg": 1})
     assert b2["campus"] == "other" and b2["crs"] == {"epsg": 1}
-
-
-def test_web_header_has_university_and_campus_name():
-    h = site.web_header({"university": "架空大学", "campus_name": "本キャンパス"}, "x")
-    assert list(h)[:2] == ["schema", "campus"] and h["university"] == "架空大学" and h["campus_name"] == "本キャンパス"
-    assert site.web_header({}, "y")["university"] is None

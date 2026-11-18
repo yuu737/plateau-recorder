@@ -6,7 +6,7 @@
                 （面の上で横の線なら高さ、縦の線なら面に沿う向き）に ±SEARCH_M m ずらしながら写真の縁の強さ（勾配）を読み、
                 全部の点で足し合わせた山のうち 0 に一番近い強い山を「写真の縁」とする。ずれは m で直接出る（写真 − JSON）。
                 原点は登録済みなので、compare の「横の原点が柱の何本目か」の問題は起きない。
-(b) 重ね画像    model build --cameras で写真の視点の描画を作り、写真に重ねる（--no-render で省略）。
+(b) 重ね画像    元は Blender で写真の視点の描画を作って重ねていた。PLATEAU 版では Blender を使わないので削除した。
 
 出力 out/<棟>/recheck/<日時>/summary.json・summary.md・lines_<写真>_<面>.png・overlay_<写真>.png
 """
@@ -467,44 +467,9 @@ def recheck(building_json: Path, photos: list[str] | None = None, fast: bool = F
             item["lines_png"] = str(draw_lines(img, proj, [l for l in lines if l["result"]["n_samples"]],
                                                out / f"lines_{Path(ph).stem}_{e['face']}.png"))
         summary["photos"].append(item)
-    if render and ents:
-        summary["renders"] = render_overlays(building_json, ents, out, fast, blender)
     (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
     (out / "summary.md").write_text(summary_md(summary), encoding="utf-8")
     return summary, out
-
-
-def render_overlays(building_json: Path, ents: list[dict], out: Path, fast: bool, blender: str | None = None) -> list[dict]:
-    """(b) 登録の視点で模型を描き、写真に重ねる。"""
-    from . import model
-    from .pose import overlay
-
-    pdir = out / "poses"
-    pdir.mkdir(parents=True, exist_ok=True)
-    cams, res = [], []
-    seen: set = set()
-    ents = [e for e in ents if not (e["photo"] in seen or seen.add(e["photo"]))]     # 写真ごとに 1 回（pose の登録は面ごとに並ぶ）
-    for e in ents:
-        bl = (e.get("camera") or {}).get("blender")
-        if not bl:
-            res.append({"photo": e["photo"], "ok": False, "reason": "視点（blender）が登録に無い"})
-            continue
-        p = pdir / f"{Path(e['file']).stem}_{e['face']}_pose.json"
-        p.write_text(json.dumps({"ok": True, "photo": str(photo_path(e)), "blender": bl}, ensure_ascii=False), encoding="utf-8")
-        cams.append(p)
-    if not cams:
-        return res
-    b = load_building(building_json)
-    mdir = model.build(building_json, None, blender, fast, cams)
-    for e in ents:
-        stem = Path(e["file"]).stem
-        ren = Path(mdir) / f"view_photo_{stem}.png"
-        if not ren.exists():
-            res.append({"photo": e["photo"], "ok": False, "reason": f"描画が無い {ren}"})
-            continue
-        o = overlay(photo_path(e), ren, out / f"overlay_{stem}.png")
-        res.append({"photo": e["photo"], "ok": True, "render": str(ren), "overlay": str(o)})
-    return res
 
 
 def summary_md(s: dict) -> str:

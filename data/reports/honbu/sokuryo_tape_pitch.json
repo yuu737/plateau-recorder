@@ -29,5 +29,28 @@
    }
   ],
   "warnings": []
+ },
+ "length_h:pier_f6": {
+  "building": "honbu",
+  "what": "length_h",
+  "ref": "pier_f6",
+  "value": 0.92,
+  "tol": 0.005,
+  "photo": "本部棟正面柱92cm",
+  "face": "f6",
+  "link": {
+   "link": "tape",
+   "photo": "本部棟正面柱92cm",
+   "read": "0→92.0 cm",
+   "n": 1,
+   "what": "length_h",
+   "value": 0.92,
+   "tol": 0.005,
+   "ref": "pier_f6",
+   "ref_name": "f6 の柱型の幅（1 階、巻尺の爪を左の角に掛けて右の角まで）",
+   "tool": "巻尺"
+  },
+  "checks": [],
+  "warnings": []
  }
 }

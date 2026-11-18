@@ -154,8 +154,6 @@ def test_validation_group_form_and_per_value_form():
     assert any("name" in e for e in errs(comp([box], name="")))
     assert any("primitives" in e for e in errs(comp([])))
     assert any("faces にありません" in e for e in errs(comp([box], face="Z")))
-    # asset の素材は台帳を見る
-    assert any("no_such_thing" in e for e in errs(comp([{**box, "material": "asset:no_such_thing"}])))
 
 
 def test_part_state_of_group_form():

@@ -5,7 +5,7 @@ import pytest
 
 from recorder import agents
 
-AGENTS = {"satsuei", "shiwake", "kansatsu", "kazoe", "sokuryo", "sekkei", "seizu", "kenshu", "chizu", "shikichi", "shinko", "mejirushi", "hogo"}  # hogo：保護の係（K-104、T4）
+AGENTS = {"satsuei", "shiwake", "kansatsu", "kazoe", "sokuryo", "sekkei", "seizu", "kenshu", "chizu", "shikichi", "shinko", "mejirushi", "hogo", "gaiheki"}  # hogo：保護の係（K-104、T4）。gaiheki：外壁の読み係（PLATEAU 版）
 
 
 def test_load_defs():
@@ -81,7 +81,7 @@ def test_pipeline_stops_on_limit(tmp_path, monkeypatch):
 def test_tasks_cover_all_steps(tmp_path):
     doc = agents.build_tasks("b1", "data/photos/20261104")
     assert [s["step"] for s in doc["steps"]] == agents.PIPELINE_STEPS
-    assert agents.PIPELINE_STEPS[-3:] == ["kenshu", "seizu_final", "web"]
+    assert agents.PIPELINE_STEPS[-2:] == ["kenshu", "seizu_final"]
     by = {s["step"]: s for s in doc["steps"]}
     for s in doc["steps"]:
         assert s["task"]
@@ -89,9 +89,9 @@ def test_tasks_cover_all_steps(tmp_path):
             assert s["system_files"][1] == f".claude/agents/{s['agent']}.md" and s["model_id"]
     assert "--period during" in by["satsuei"]["task"]
     assert "scripts/design_b1.py" in by["sekkei"]["task"] and "--from-site" in by["sekkei"]["task"]
-    for w in ("recheck", "photoproj", "register", "coverage", "検収 C"):
+    for w in ("recheck", "register", "coverage", "検収 C"):
         assert w in by["kenshu"]["task"]
-    assert by["web"]["command"] == "recorder site export-web --with-coverage" and by["seizu_final"]["agent"] == "seizu"
+    assert by["seizu_final"]["agent"] == "seizu"
     # 目印係は模型の後・検収の前。依頼文は升を指して道具（pnp）が登録する形
     i = agents.PIPELINE_STEPS.index
     assert i("seizu") < i("mejirushi") < i("kenshu")
@@ -132,7 +132,7 @@ def test_log_appends(tmp_path):
     assert doc["runner"] == "subagent" and [s["step"] for s in doc["steps"]] == ["shiwake", "kansatsu"]
     assert doc["steps"][0]["model"] == "claude-opus-5-5" and doc["steps"][1]["outputs"] == ["out/b1/kansatsu_f0.json"]
     assert doc["seconds_total"] == 90.5 and doc["tokens_total"] == 1500
-    r3 = agents.log_step("b1", "web", model="code", cwd=tmp_path, new=True)
+    r3 = agents.log_step("b1", "seizu_final", model="code", cwd=tmp_path, new=True)
     assert r3["record"] != r1["record"] and r3["steps"] == 1
     with pytest.raises(agents.AgentError):
         agents.log_step("b1", "nai", cwd=tmp_path)

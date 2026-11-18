@@ -91,16 +91,6 @@ def test_overlap_order_exclude_and_uncovered(tmp_path, flat_ground):
     svg = (tmp_path / "coverage_S.svg").read_text(encoding="utf-8")
     assert 'href="coverage_S_photo.png"' in svg and 'id="elevation-lines"' in svg and "url(#cov-hatch)" in svg
     assert (tmp_path / "coverage_S_check.png").exists()
-    # Web の重ね：写真ではなく、未撮影・使えない所の矩形だけ
-    b = schema.load_building(FIX)
-    ev = schema.evidence_summary(b)
-    layer = site.coverage_layer(b, ev, jp)
-    for f in layer["faces"]:
-        assert set(f) == {"id", "from", "to", "coverage_pct", "uncovered", "unusable"}
-    if (ev["faces"].get("S") or {}).get("state") not in (None, "unknown"):
-        fS = next(f for f in layer["faces"] if f["id"] == "S")
-        assert fS["uncovered"] == [[20.0, 30.0, 0.0, 15.0]]
-        assert fS["unusable"] == [[6.0, 8.0, 3.0, 6.0]]
 
 
 def test_no_photo_keeps_fill_only(tmp_path, flat_ground):

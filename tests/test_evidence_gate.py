@@ -84,19 +84,6 @@ def test_write_to_confirm_merges_per_photo(tmp_path):
     assert json.loads(Path(res["path"]).read_text(encoding="utf-8"))["building"] == "b1"
 
 
-def test_serve_confirm_api(tmp_path):
-    from recorder import serve
-    root = _repo(tmp_path)
-    lst = serve.api_confirm_list(root, ["b1"])["buildings"]["b1"]
-    assert lst["faces"] == ["f1", "f2"] and {it["photo"] for it in lst["items"]} == {"P2", "P3", "P4", "P5", "P9"}
-    p2 = next(it for it in lst["items"] if it["photo"] == "P2")
-    assert p2["why"] == "仕分け係：f1 の正面"
-    assert serve.api_confirm(root, {"photo": "P5"}) == {"photo": "P5", "changed": False}
-    assert serve.api_confirm(root, {"photo": "P2", "face": "f2"})["changed"] is True
-    left = {it["photo"] for it in serve.api_confirm_list(root, ["b1"])["buildings"]["b1"]["items"]}
-    assert left == {"P3", "P4", "P9"}
-
-
 def test_events_ask_staff_to_confirm(tmp_path):
     from recorder import agents
     root = _repo(tmp_path)

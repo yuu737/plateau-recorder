@@ -40,15 +40,15 @@ def agent_limits(name: str, model: str) -> dict:
     """係 1 回の上限：モデルの既定（LIMITS）に係ごとの上書き（AGENT_LIMITS）を重ねた物。"""
     return {**LIMITS[model], **AGENT_LIMITS.get(name, {})}
 
-# 工程の順。seizu・seizu_final・web はコード（recorder.run / site.export_web を直接呼ぶ。API は使わない）
+# 工程の順。seizu・seizu_final はコード（recorder.run を直接呼ぶ。API は使わない）
 # mejirushi（目印係）は模型ができた後（seizu の後）に、写真の視点を目印の対応で解いて登録する。検収係はその登録を使う
 PIPELINE_STEPS = ["satsuei", "shiwake", "kansatsu", "kazoe", "sokuryo", "sekkei", "seizu", "mejirushi", "kenshu",
-                  "seizu_final", "web"]
-CODE_STEPS = {"seizu", "seizu_final", "web"}
+                  "seizu_final"]
+CODE_STEPS = {"seizu", "seizu_final"}
 DEFAULT_MAX_USD = 40.0   # 棟ごとの費用の上限の既定（USD。CLI の --max-usd と職員の画面の既定。0 か None で上限なし）
 # SDK が CLI から受け取る 1 通の JSON の上限（既定 1 MB）。写真を Read した道具の結果は 1 MB を超えるので 32 MB に広げる
 SDK_MAX_BUFFER_SIZE = 32 * 1024 * 1024
-STEP_AGENT = {"seizu_final": "seizu", "web": "seizu"}     # 工程名 → 係の定義（記録の agent 名）
+STEP_AGENT = {"seizu_final": "seizu"}     # 工程名 → 係の定義（記録の agent 名）
 
 
 class AgentError(RuntimeError):
@@ -493,8 +493,7 @@ def step_command(step: str, building_id: str) -> str | None:
     """コードの工程が実行するコマンド（サブエージェントの試走では指揮役が同じ物を打つ）。"""
     j = f"data/buildings/{building_id}.json"
     return {"seizu": f"recorder run {j} --fast",
-            "seizu_final": f"recorder run {j}",
-            "web": "recorder site export-web --with-coverage"}.get(step)
+            "seizu_final": f"recorder run {j}"}.get(step)
 
 
 def step_task(step: str, building_id: str, photos_folder: str | None = None, cwd: Path | None = None,
@@ -561,7 +560,7 @@ def step_task(step: str, building_id: str, photos_folder: str | None = None, cwd
         "kenshu": f"{head} 入力：{j}、{design}、{out}/ の生成物、data/photos/registry.json。"
                   f"写真の登録と面の展開は測量係と目印係（{rep}/mejirushi/）が済ませている。`recorder recheck {j} --fast` から始め、どちらも登録できなかった写真・"
                   f"後から届いた写真だけ `photos register-chain` か `photos compare` → `photos register` で登録し直して "
-                  f"`recorder photoproj {j} --fast` → 検収 C（屋上は航空写真）でずれと意味の不足を見る。写真にあって模型に無い 1 m 以上の物は自分で足す。"
+                  f"検収 C（屋上は航空写真）でずれと意味の不足を見る。写真にあって模型に無い 1 m 以上の物は自分で足す。"
                   f"直すのは {design} だけ（再実行 → validate → recheck）。2 回で収束しなければ止めて撮影依頼。"
                   f"最後に `recorder coverage {j}`。出力 {rep}/kenshu_<写真id>.json と {rep}/kenshu_summary.json（面ごとの合否・直した値・requests）。"
                   f"争点は out/{b}/soten.json。",
@@ -776,7 +775,7 @@ def kenshu_passed_faces(cwd: Path, bid: str, after: str | None = None) -> set[st
     同じ（面ごとに一番新しい round_* の判定、上の faces は一番古い回。11/8 昼に寄せた：faces は手で書く欄で古いままの事がある）。
     after（再検収のフォルダ名 YYYYMMDD_HHMMSS）より後に書かれた（最新の回の made_at）時だけ使う。
     検収係が線を見て合格にした面は、道具の線の数で進行役を呼び直さない。"""
-    from .report import kenshu_faces
+    from .kenshu import kenshu_faces
     kf = kenshu_faces(Path(cwd), bid)
     if not kf:
         return set()
@@ -946,18 +945,8 @@ def detect_events(building_id: str | None, cwd: str | Path = ".", now: str | Non
 
 
 def refresh_report(building_id: str, cwd: Path) -> dict:
-    """進捗報告（out/<棟>/report.html）を今の生成物で出し直す。工程が 1 つ終わるごとに呼ぶので、段が todo → partial → done と埋まっていく。
-    棟 JSON が無い（まだ設計前）か失敗した時は理由を返すだけで、工程は止めない。"""
-    j = cwd / "data" / "buildings" / f"{building_id}.json"
-    if not j.exists():
-        return {"skipped": "棟 JSON がまだ無い"}
-    try:
-        from . import report as _report
-
-        r = _report.run(j, cwd / "out" / building_id / "report.html", root=cwd)
-        return {"html": r["html"], "stages": {k: v["status"] for k, v in r["stages"].items()}}
-    except Exception as e:  # noqa: BLE001
-        return {"error": f"{type(e).__name__}: {e}"}
+    """PLATEAU 版では進捗の HTML（report.py）を作らない。記録の形を保つために空の結果を返す。"""
+    return {"skipped": "PLATEAU 版では進捗の HTML を作らない"}
 
 
 def _run_code_step(step: str, building_id: str, cwd: Path) -> dict:
@@ -966,17 +955,11 @@ def _run_code_step(step: str, building_id: str, cwd: Path) -> dict:
            "note": "コードの工程（API を使わない）。トークンは無いので null"}
     t = time.time()
     try:
-        if step == "web":
-            from . import site
+        from . import run as runner
 
-            r = site.export_web(campus_slug(cwd) or site.default_campus(), with_coverage=True)
-            rec.update(ok=True, outputs=[str(r["path"])])
-        else:
-            from . import run as runner
-
-            j = cwd / "data/buildings" / f"{building_id}.json"
-            r = runner.run(j, cwd / "out" / building_id, fast=True) if step == "seizu" else runner.run(j, cwd / "out" / building_id)
-            rec.update(ok=bool(r.get("ok")), outputs=[str(Path(r["out"]) / "run_report.json")])
+        j = cwd / "data/buildings" / f"{building_id}.json"
+        r = runner.run(j, cwd / "out" / building_id, fast=True) if step == "seizu" else runner.run(j, cwd / "out" / building_id)
+        rec.update(ok=bool(r.get("ok")), outputs=[str(Path(r["out"]) / "run_report.json")])
     except SystemExit as e:     # 道具が SystemExit で止まる（BLENDER が無い等）：except Exception で拾えずスレッドごと消えるので、失敗として返す
         rec.update(ok=False, outputs=[], error=f"SystemExit: {e}")
     rec["seconds"] = round(time.time() - t, 1)
@@ -1017,7 +1000,7 @@ def write_pipeline_record(building_id: str, doc: dict, cwd: Path, name: str | No
 # ---- 本番の流れ（API）：状態の保存・再開（resume）・追記（continue）・費用の上限（11/8、J-014・J-029） ----
 STATE_NAME = "pipeline_state.json"           # out/<棟>/pipeline_state.json（工程ごとの会話 id と記録。git に入れない）
 # 追記（新しい写真で前回の棟 JSON に足す）の工程。観察・数え・目印は回さない（関係する面だけ測量・設計・検収）
-CONTINUE_STEPS = ["satsuei", "shiwake", "sokuryo", "sekkei", "seizu", "kenshu", "seizu_final", "web"]
+CONTINUE_STEPS = ["satsuei", "shiwake", "sokuryo", "sekkei", "seizu", "kenshu", "seizu_final"]
 STOP_REASONS = {"rate_limit": "429・使用量の上限（3 回待っても解けない）", "limit": "1 回の呼び出しの上限（turns・費用）",
                 "error": "係がエラーで終わった", "crash": "落ちた（例外・プロセスの終了）", "code": "コードの工程が失敗",
                 "max_usd": "棟の費用の上限", "event": "進行役か人を呼ぶ事件",
@@ -1870,14 +1853,6 @@ def _drive(state: dict, cwd: Path, *, dry_run: bool, agents_dir, prices, shinko_
             rec = recs[-1]
             if not dry_run:
                 rec["progress_report"] = refresh_report(b, cwd)
-                if s == "web" and not stop:
-                    # 歩く画面が出た後に、報告の絵（証拠ビューア・歩く画面）を窓を出さずに裏で撮る（待たない）
-                    try:
-                        from . import shots as _shots
-                        _shots.run_in_background(b)
-                        rec["shots"] = "background"
-                    except Exception as e:  # noqa: BLE001
-                        rec["shots"] = f"skipped: {type(e).__name__}: {e}"
             state["results"].extend(recs)
         if stop is None:
             state["done"].append(s)

@@ -1,0 +1,60 @@
+{
+ "schema": "sokuryo-span/1",
+ "photo": "PXL_20261103_042909968",
+ "face": "f6",
+ "image": "out/facade_ppm120/honbu/f6/PXL_20261103_042909968.jpg",
+ "rows": [
+  {
+   "ok": true,
+   "axis": "x",
+   "box": [
+    200,
+    740,
+    1500,
+    950
+   ],
+   "bright": true,
+   "width_range_px": [
+    80.0,
+    140.0
+   ],
+   "elements": [
+    [
+     485.02,
+     584.15
+    ],
+    [
+     661.42,
+     771.2
+    ],
+    [
+     1301.4,
+     1411.82
+    ]
+   ],
+   "widths": [
+    109.78,
+    110.42
+   ],
+   "spacings": [
+    639.98
+   ],
+   "dropped_spacings": [
+    176.4
+   ],
+   "reason": "",
+   "spacing_range_px": [
+    600.0,
+    680.0
+   ]
+  }
+ ],
+ "n_widths": 2,
+ "n_spacings": 1,
+ "ok": true,
+ "width_px": 110.1,
+ "width_sd_px": 0.45,
+ "spacing_px": 639.98,
+ "spacing_sd_px": 0.0,
+ "px_tol": 1.0
+}

@@ -8,7 +8,7 @@ import pytest
 from recorder import agents, preflight
 
 ROOT = Path(__file__).resolve().parents[1]
-STEPS = ["sokuryo", "sekkei", "seizu", "kenshu", "seizu_final", "web"]
+STEPS = ["sokuryo", "sekkei", "seizu", "kenshu", "seizu_final"]
 
 
 @pytest.fixture
@@ -19,9 +19,6 @@ def repo(tmp_path, monkeypatch):
     (tmp_path / "data/photos/registry.json").write_text('{"entries": []}', encoding="utf-8")
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs/手順_エージェント.md").write_text("# 手順\n", encoding="utf-8")
-    blender = tmp_path / "blender.exe"
-    blender.write_text("x", encoding="utf-8")
-    monkeypatch.setenv("BLENDER", str(blender))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
     monkeypatch.setenv("RECORDER_LOCK_DIR", str(tmp_path / "locks"))
     return tmp_path
@@ -43,7 +40,7 @@ def test_ok_state_has_no_ng(repo):
     _state(repo)
     doc = preflight.run("b1", cwd=repo, check_serve=False)
     assert doc["ok"], [i for i in doc["items"] if i["level"] == "ng"]
-    assert _levels(doc, "記録") == ["ok"] and _levels(doc, "BLENDER") == ["ok"]
+    assert _levels(doc, "記録") == ["ok"] and _levels(doc, "BLENDER") == []      # PLATEAU 版は Blender を使わない
     assert _levels(doc, "費用") == ["ok"] and (repo / "out/b1/preflight.json").exists()
     assert any("落ちる 0" in x for x in preflight.lines(doc))
 
@@ -58,13 +55,12 @@ def test_missing_and_broken_state(repo):
     assert not doc["ok"] and "読めない" in [i for i in doc["items"] if i["what"] == "記録"][0]["why"]
 
 
-def test_done_out_of_order_and_no_blender(repo, monkeypatch):
+def test_done_out_of_order(repo, monkeypatch):
     st = _state(repo)
     st["done"] = ["sekkei", "sokuryo"]
     agents._save_state(st, repo)
-    monkeypatch.delenv("BLENDER")
     doc = preflight.run("b1", cwd=repo, check_serve=False)
-    assert not doc["ok"] and _levels(doc, "done の順") == ["ng"] and _levels(doc, "BLENDER") == ["ng"]
+    assert not doc["ok"] and _levels(doc, "done の順") == ["ng"]
 
 
 def test_budget_and_key_warnings(repo, monkeypatch):
@@ -91,7 +87,7 @@ def test_events_plan(repo):
 
 def test_serve_not_running_is_warning(repo):
     _state(repo)
-    doc = preflight.run("b1", cwd=repo, port=1)
+    doc = preflight.run("b1", cwd=repo, port=1, check_serve=True)
     assert _levels(doc, "serve") == ["warn"]
 
 

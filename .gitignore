@@ -30,27 +30,18 @@ data/site/cache/
 タワーと図書館付近/
 /メジャー/
 
-# 歩ける画面の生成物（recorder site export-web で再生成）
-web/data/
+# PLATEAU の元データの写し（公開データ。data/plateau/catalog_52365768.json の URL から取り直せる）と、航空写真のタイルの写し
+data/plateau/udx/
+data/plateau/gsi_seamlessphoto_z18/
 
-# CC0 アセットの取得物（recorder assets fetch で再取得。一覧は data/assets/catalog.json）
-/assets/
+# 答え合わせの正解（作る側の係から隠す。CLAUDE.md の決まり 7）は git に入れるが、係の依頼文には入れない
 
-# 試走の退避（scripts/trial_reset.py）
-/trial/
-写真/
-
-# 単眼の深さのモデルの重み（recorder/depth.py。取得 URL はそのファイルに）
-/checkpoints/
-
-# 係の報告 JSON（data/reports/<棟>/）は git に入れる。画像は入れない（絵は out/ で再生成）
+# 係の報告 JSON（data/reports/<棟>/）は git に入れる。画像は入れない（絵は out/ で再生成。元の写真の切り抜きに人名が写りうる）
 data/reports/**/*.png
 data/reports/**/*.jpg
 data/reports/**/*.jpeg
 data/reports/**/*.webp
 
-# 見本の動画（他人の作り。参考にだけ使う）と、他の人の投稿の写しを含む動画のメモ
+# 見本の動画（他人の作り）と、他の人の作品の分析メモ置き場
 /*.mp4
-/docs/動画_要点_11-08.md
-/docs/動画_受賞作の作り_WrenchBoard_11-08.md
 /docs/非公開/

@@ -379,7 +379,22 @@ MEASURED_LINKS = ("tape", "count", "px_ratio", "uniform_period")   # これだ�
 TAPE_END_M = 0.005          # メジャーの読み：両端 ±0.5 cm（第 1 部の例のとおり、周期の ± は 0.005 m ÷ 枚数）
 UNIFORM_THR = 0.03          # 面の中の周期のばらつき（(最大−最小)÷平均）の閾値。超えれば uniform_period の輪は出さない
                             # （11/8 Fable：1 % → 3 %。ばらつきの半幅 ÷ 平均は ± に積む）
-AXIS_OF = {"tile_pitch_h": "x", "tile_pitch_v": "y"}   # 横の周期は縦の目地（列ごと）、縦の周期は横の目地（行ごと）
+# 物差しの種類（11/19）。タイルはくり返しが多く一番使いやすいが、物差しはタイルに限らない：
+# 巻尺か距離計で 1 度測れる長さ（柱型の幅・柱間・扉の幅や高さ）なら、同じ正面化画像の px の比で面の値へつなげる。
+#   period：周期（タイル＋目地）。value ＝ 読み ÷ 枚数
+#   length：直接測った長さ。value ＝ 読み ÷ n（n は同じ物をまとめて測った数。ふつう 1）。何を測ったかを ref で必ず書く
+RULER_KINDS = {
+    "tile_pitch_h": {"axis": "x", "kind": "period", "label": "外装タイルの横の周期（タイル＋目地）"},
+    "tile_pitch_v": {"axis": "y", "kind": "period", "label": "外装タイルの縦の周期（タイル＋目地）"},
+    "length_h": {"axis": "x", "kind": "length", "label": "横の長さを直接測った物（柱型の幅・柱間・扉の幅など）"},
+    "length_v": {"axis": "y", "kind": "length", "label": "縦の長さを直接測った物（扉の高さ・段の高さなど）"},
+}
+AXIS_OF = {k: v["axis"] for k, v in RULER_KINDS.items()}   # 横は x（縦の目地・縁）、縦は y（横の目地・縁）
+REF_ID = r"[A-Za-z0-9_\-]{1,40}"     # 長さの物差しの名前（ファイル名と台帳の id に入る）
+
+
+def is_length(what: str) -> bool:
+    return RULER_KINDS.get(what, {}).get("kind") == "length"
 
 
 def _ceil(v: float, step: float) -> float:
@@ -414,13 +429,33 @@ def parse_read(text: str) -> tuple[float, float, str]:
     return a, b, f"{a:g}→{b:g} cm"
 
 
-def tape_link(photo: str, read: str, n: int, what: str) -> dict:
-    """メジャーの読みから tape の輪を作る。value＝(終わり−始め)÷枚数（m）、tol＝0.005 m ÷ 枚数。"""
+def tape_link(photo: str, read: str, n: int, what: str, *, ref: str | None = None, ref_name: str | None = None,
+              tool: str | None = None) -> dict:
+    """メジャーの読みから tape の輪を作る。value＝(終わり−始め)÷枚数（m）、tol＝0.005 m ÷ 枚数。
+
+    what が長さの物差し（length_h・length_v）の時は、何を測ったかの名前 ref（英数字、例 pier_f6）が要る。
+    ref_name は人が読む説明、tool は測った道具（巻尺・距離計）。距離計でも ± は巻尺と同じ 0.5 cm で積む（控えめ）。"""
+    import re
+
     if not isinstance(n, int) or n <= 0:
         raise ValueError(f"枚数 n は正の整数: {n}")
+    if what not in RULER_KINDS:
+        raise ValueError(f"物差しの種類が分かりません: {what}（{' / '.join(RULER_KINDS)}）")
+    if is_length(what):
+        if not ref or not re.fullmatch(REF_ID, ref):
+            raise ValueError(f"長さの物差し（{what}）には、何を測ったかの名前 ref（英数字と _ -、例 pier_f6）が要ります: {ref!r}")
+    elif ref is not None:
+        raise ValueError(f"タイルの周期（{what}）に ref は付けません")
     a, b, shown = parse_read(read)
-    return {"link": "tape", "photo": photo, "read": shown, "n": n, "what": what,
-            "value": round((b - a) / 100.0 / n, 6), "tol": _ceil(TAPE_END_M / n, 1e-6)}
+    ln = {"link": "tape", "photo": photo, "read": shown, "n": n, "what": what,
+          "value": round((b - a) / 100.0 / n, 6), "tol": _ceil(TAPE_END_M / n, 1e-6)}
+    if ref:
+        ln["ref"] = ref
+    if ref_name:
+        ln["ref_name"] = ref_name
+    if tool:
+        ln["tool"] = tool
+    return ln
 
 
 def chain_tol(chain: list[dict], value: float) -> float:
@@ -579,6 +614,131 @@ def uniform_period(img: np.ndarray, *, axis: str, wall_box: list[float] | None =
     return out
 
 
+# --- くり返す要素（柱型など）の幅と間（11/19）：タイルが無い面で、直接測った長さを面へつなぐための px ---
+
+SPAN_EDGE_FRAC = 0.35       # 縁の候補：明るさの変化（勾配）の強さが帯の中の最大の 35 % 以上の山
+SPAN_SPACING_TOL = 0.08     # 隣の要素との間が中央値から ±8 % を超えたら外す（取りこぼし・余計な縁。外した数は残す）
+
+
+def _peak_sub(v: np.ndarray, i: int) -> float:
+    """山 i の位置を放物線で小数 px に。"""
+    if 0 < i < len(v) - 1:
+        a, b, c = v[i - 1], v[i], v[i + 1]
+        den = a - 2 * b + c
+        if den != 0:
+            return i + 0.5 * (a - c) / den
+    return float(i)
+
+
+def element_spans(img: np.ndarray, *, box: list[float], axis: str = "x", width_px: tuple[float, float],
+                  bright: bool = True, smooth: float = 1.5, frac: float = SPAN_EDGE_FRAC,
+                  spacing_px: tuple[float, float] | None = None) -> dict:
+    """正面化した面の帯（box）で、くり返す要素（柱型など）の両側の縁を拾い、幅と間（左の縁 → 次の左の縁）を px で返す。
+
+    帯を axis に直角な向きに平均した明るさの変化（勾配）の山が縁。要素が周り（窓の凹みの影など）より明るければ
+    bright=True で、「暗→明」の縁の次の「明→暗」の縁までが要素（幅が width_px の範囲の物だけ）。
+    幅は左右の縁の差、間は隣り合う要素の左の縁どうしの差（どちらも同じ面の上の縁なので、写真の倍率や奥行きのずれは
+    比で消える）。数字は「候補」：どの帯がその要素か（柱型か、窓か）は、決める役（Claude か人）が画像を見て選ぶ。"""
+    import cv2
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+    H, W = gray.shape[:2]
+    x0, y0, x1, y1 = [int(round(v)) for v in box]
+    x0, y0, x1, y1 = max(0, x0), max(0, y0), min(W, x1), min(H, y1)
+    crop = gray[y0:y1, x0:x1].astype(float)
+    out = {"ok": False, "axis": axis, "box": [x0, y0, x1, y1], "bright": bright, "width_range_px": list(width_px),
+           "elements": [], "widths": [], "spacings": [], "dropped_spacings": [], "reason": ""}
+    if crop.size == 0:
+        out["reason"] = "帯が画像の外です"
+        return out
+    prof = crop.mean(axis=0) if axis == "x" else crop.mean(axis=1)
+    if smooth > 0:
+        prof = cv2.GaussianBlur(prof.reshape(1, -1), (0, 0), smooth).ravel()
+    d = np.gradient(prof)
+    a = np.abs(d)
+    thr = frac * a.max() if a.max() > 0 else np.inf
+    edges = [(_peak_sub(a, i), 1 if d[i] > 0 else -1) for i in range(1, len(a) - 1)
+             if a[i] >= thr and a[i] >= a[i - 1] and a[i] > a[i + 1]]
+    rise, fall = (1, -1) if bright else (-1, 1)
+    lo, hi = width_px
+    off = x0 if axis == "x" else y0
+    i = 0
+    while i < len(edges) - 1:
+        p, s = edges[i]
+        q, t = edges[i + 1]
+        if s == rise and t == fall and lo <= q - p <= hi:
+            out["elements"].append([round(float(p) + off, 2), round(float(q) + off, 2)])
+            i += 2
+            continue
+        i += 1
+    els = out["elements"]
+    out["widths"] = [round(r - l, 2) for l, r in els]
+    raw = [round(els[k + 1][0] - els[k][0], 2) for k in range(len(els) - 1)]
+    if spacing_px:
+        # 間の範囲を決める役が画像を見て渡した時：各要素から、範囲に入る次の要素までを間にする（余計な縁を飛ばせる）
+        s_lo, s_hi = spacing_px
+        out["spacing_range_px"] = [s_lo, s_hi]
+        used = []
+        for k in range(len(els)):
+            j = next((j for j in range(k + 1, len(els)) if s_lo <= els[j][0] - els[k][0] <= s_hi), None)
+            if j is not None:
+                used.append(round(els[j][0] - els[k][0], 2))
+        out["spacings"] = used
+        out["dropped_spacings"] = [s for s in raw if not s_lo <= s <= s_hi]
+        # 間に使わなかった要素の幅は、余計な縁（窓枠など）かもしれないので幅からも外す
+        keep = set()
+        for k in range(len(els)):
+            for j in range(k + 1, len(els)):
+                if s_lo <= els[j][0] - els[k][0] <= s_hi:
+                    keep.update((k, j))
+        out["widths"] = [round(els[k][1] - els[k][0], 2) for k in sorted(keep)]
+    elif raw:
+        med = float(np.median(raw))
+        out["spacings"] = [s for s in raw if abs(s - med) <= SPAN_SPACING_TOL * med]
+        out["dropped_spacings"] = [s for s in raw if abs(s - med) > SPAN_SPACING_TOL * med]
+    if len(els) < 2:
+        out["reason"] = f"要素が 2 つ以上見つかりません（見つかった {len(els)}）。帯・幅の範囲・明暗の向きを見直す"
+        return out
+    if not out["spacings"]:
+        out["reason"] = f"要素 {len(els)} の間がそろいません（間 {raw} px）。別の物を拾っていないか画像で見る"
+        return out
+    out["ok"] = True
+    return out
+
+
+def span_summary(rows: list[dict], *, photo: str, face: str | None, image: str | None = None) -> dict:
+    """帯ごとの element_spans をまとめ、幅・間の平均とばらつき、鎖に入れる px_ratio の候補を出す。"""
+    from .schema import PX_READ_TOL
+
+    W =[w for r in rows if r.get("ok") for w in r["widths"]]
+    S = [s for r in rows if r.get("ok") for s in r["spacings"]]
+    out = {"schema": "sokuryo-span/1", "photo": photo, "face": face, "image": image, "rows": rows,
+           "n_widths": len(W), "n_spacings": len(S), "ok": bool(W and S)}
+    if not out["ok"]:
+        out["reason"] = "幅か間が 1 つも取れていません"
+        return out
+    sd = (lambda v: float(np.std(v, ddof=1)) if len(v) > 1 else 0.0)
+    out.update({"width_px": round(float(np.mean(W)), 2), "width_sd_px": round(sd(W), 2),
+                "spacing_px": round(float(np.mean(S)), 2), "spacing_sd_px": round(sd(S), 2)})
+    # 縁の読みの ±：既定の 1 px と、幅・間のばらつき（標準偏差）の大きい方（平均の ± ではなく 1 つの読みの ± として控えめに）
+    out["px_tol"] = round(max(PX_READ_TOL, out["width_sd_px"], out["spacing_sd_px"]), 2)
+    return out
+
+
+def span_ratio(s: dict, use: str) -> dict:
+    """span_summary → build_chain の ratios の 1 つ。use は spacing/width（幅を測って間を出す）か width/spacing。"""
+    if not s.get("ok"):
+        raise ValueError(f"span の結果が使えません（{s.get('reason')}）")
+    if use == "spacing/width":
+        px, what = [s["spacing_px"], s["width_px"]], "要素の間 ÷ 要素の幅"
+    elif use == "width/spacing":
+        px, what = [s["width_px"], s["spacing_px"]], "要素の幅 ÷ 要素の間"
+    else:
+        raise ValueError(f"--span-use は spacing/width か width/spacing: {use}")
+    return {"photo": s["photo"], "px": px, "px_tol": s["px_tol"], "source": "measure span",
+            "what": f"{what}（同じ正面化画像・同じ面の上の縁、幅 {s['n_widths']} 個・間 {s['n_spacings']} 個の平均）"}
+
+
 def _drift(xs: list[float], axis: str) -> dict | None:
     """か所ごとの周期が一方向に（単調に）変わるか。変われば {"direction", "percent"}（最初→最後の変化 %）。"""
     if len(xs) < 3:
@@ -617,17 +777,22 @@ def write_tape(link: dict, *, building: str, face: str | None, reports: Path | N
 
     d = {"schema": "sokuryo-tape/1", "building": building, "face": face, "photo": link["photo"],
          "made_by": by, "made_at": datetime.now().isoformat(timespec="seconds"), "link": link}
-    p = _reports(reports) / building / f"sokuryo_tape_{link['photo']}.json"
+    # 同じ写真でタイルと柱の幅の両方を読むことがあるので、長さの物差しは名前をファイル名に足す（タイルは前と同じ名前）
+    tail = f"__{link['what']}_{link['ref']}" if link.get("ref") else ""
+    p = _reports(reports) / building / f"sokuryo_tape_{link['photo']}{tail}.json"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
     return p
 
 
-def pitch_summary(building: str, what: str, reports: Path | None = None) -> dict:
+def pitch_summary(building: str, what: str, reports: Path | None = None, ref: str | None = None) -> dict:
     """棟のメジャー写真（sokuryo_tape_*.json）の周期を突き合わせ、棟の周期を決める。
 
     採るのは ± が一番狭い読み（またがった枚数が一番多い物）。他の読みは検算（checks）に残し、
-    差が ± の和を超えれば警告。同じ面の別の読みで差が ± の和以内なら、その面の uniform_period の代わりに使える。"""
+    差が ± の和を超えれば警告。同じ面の別の読みで差が ± の和以内なら、その面の uniform_period の代わりに使える。
+    長さの物差し（length_h・length_v）は同じ ref（同じ物を測った読み）どうしだけを突き合わせる。"""
+    if is_length(what) and not ref:
+        raise ValueError(f"長さの物差し（{what}）は ref（何を測ったか）を指定します")
     rows = []
     for f in sorted((_reports(reports) / building).glob("sokuryo_tape_*.json")):
         if f.name == "sokuryo_tape_pitch.json":
@@ -637,12 +802,13 @@ def pitch_summary(building: str, what: str, reports: Path | None = None) -> dict
         except (OSError, json.JSONDecodeError):
             continue
         ln = d.get("link") or {}
-        if ln.get("link") == "tape" and ln.get("what") == what:
+        if ln.get("link") == "tape" and ln.get("what") == what and ln.get("ref") == ref:
             rows.append({"photo": ln["photo"], "face": d.get("face"), "value": ln["value"], "tol": ln["tol"], "link": ln})
-    out = {"building": building, "what": what, "value": None, "tol": None, "photo": None, "face": None,
+    out = {"building": building, "what": what, "ref": ref, "value": None, "tol": None, "photo": None, "face": None,
            "link": None, "checks": [], "warnings": []}
     if not rows:
-        out["warnings"].append(f"{building} に {what} のメジャーの読みがありません（estimated の道で進める）")
+        name = f"{what}（{ref}）" if ref else what
+        out["warnings"].append(f"{building} に {name} のメジャーの読みがありません（estimated の道で進める）")
         return out
     rows.sort(key=lambda r: (r["tol"], -r["link"]["n"]))
     best = rows[0]
@@ -665,7 +831,7 @@ def write_pitch_summary(s: dict, reports: Path | None = None) -> Path:
         allw = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         allw = {"schema": "sokuryo-tape-pitch/1", "building": s["building"]}
-    allw[s["what"]] = s
+    allw[f"{s['what']}:{s['ref']}" if s.get("ref") else s["what"]] = s
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(allw, ensure_ascii=False, indent=1), encoding="utf-8")
     return p
@@ -695,22 +861,30 @@ def write_ruler(s: dict, rulers: Path | None = None) -> dict:
     if s.get("value") is None:
         raise ValueError(f"{s['building']} の {s['what']} はメジャーの読みが無いので書けません")
     path = Path(rulers) if rulers else REPO / "data" / "rulers.json"
-    rid = f"{s['what']}_{s['building']}"
+    ref = s.get("ref")
+    rid = f"{s['what']}_{ref}_{s['building']}" if ref else f"{s['what']}_{s['building']}"
     ln = s["link"]
     with ledger.lock("ledger", label=f"measure pitch {rid}"):
         d = json.loads(path.read_text(encoding="utf-8"))
         rs = d.setdefault("rulers", [])
         r = next((x for x in rs if x.get("id") == rid), None)
         if r is None:
-            r = {"id": rid,
-                 "what": f"{s['building']} の外装タイルの{'横' if s['what'].endswith('_h') else '縦'}の周期（タイル＋目地）",
+            label = RULER_KINDS.get(s["what"], {}).get("label", s["what"])
+            if ref:
+                label = f"{ln.get('ref_name') or ref}（{label}）"
+            r = {"id": rid, "what": f"{s['building']} の{label}",
                  "value": None, "unit": "m", "note": "measure pitch --write-rulers が足した（台帳に項目が無かった）"}
             rs.append(r)
         checks = "（" + "、".join(f"{c['photo']} {c['diff_pct']:+.2f} %" for c in s["checks"]) + "）" if s["checks"] else ""
+        tool = ln.get("tool") or "メジャー"
+        if is_length(s["what"]):
+            how = (f"{tool}の目盛り {ln['read']}" + (f" を {ln['n']} で割った" if ln["n"] > 1 else " をそのまま長さにした")
+                   + f"（写真 {s['photo']}、面 {s.get('face') or '不明'}）。± は両端 ±0.5 cm" + (f" ÷ {ln['n']}" if ln["n"] > 1 else ""))
+        else:
+            how = (f"{tool}の目盛り {ln['read']} を {ln['n']} 枚で割った（写真 {s['photo']}、面 {s.get('face') or '不明'}）。"
+                   f"± は両端 ±0.5 cm ÷ {ln['n']} 枚")
         r.update({"value": s["value"], "unit": "m", "tol": s["tol"], "status": "measured", "evidence": [s["photo"]],
-                  "chain": [ln],
-                  "method": f"メジャーの目盛り {ln['read']} を {ln['n']} 枚で割った（写真 {s['photo']}、面 {s.get('face') or '不明'}）。"
-                            f"± は両端 ±0.5 cm ÷ {ln['n']} 枚。検算 {len(s['checks'])} 枚{checks}",
+                  "chain": [ln], "method": f"{how}。検算 {len(s['checks'])} 枚{checks}",
                   "written_at": datetime.now().isoformat(timespec="seconds")})
         if s.get("warnings"):
             r["warnings"] = s["warnings"]
@@ -912,7 +1086,12 @@ def build_chain(*, building: str, face: str, pitch: dict, count: dict | None = N
         a, b = float(r["px"][0]), float(r["px"][1])
         if a <= 0 or b <= 0:
             raise ValueError(f"px の比は正の数: {r['px']}")
-        chain.append({"link": "px_ratio", "photo": r["photo"], "px": [a, b], "what": r.get("what", "")})
+        ln = {"link": "px_ratio", "photo": r["photo"], "px": [a, b], "what": r.get("what", "")}
+        if r.get("px_tol") is not None:      # 縁の読みのばらつき（measure span）。無ければ schema の既定 ±1 px
+            ln["px_tol"] = float(r["px_tol"])
+        if r.get("source"):
+            ln["source"] = r["source"]
+        chain.append(ln)
         value *= a / b
     measured = all(ln["link"] in MEASURED_LINKS for ln in chain)
     value = round(value, 5)
@@ -924,7 +1103,12 @@ def build_chain(*, building: str, face: str, pitch: dict, count: dict | None = N
                 ev.append(ph)
     words = {"tape": "メジャー", "count": "数えた枚数", "px_ratio": "px の比", "uniform_period": "周期が一様",
              "claim": "申告", "assume": "仮定"}
-    parts = [f"タイルの周期 {tl['value']} m（メジャー {tl['photo']}：{tl['read']}、{tl['n']} 枚）"]
+    if tl.get("ref"):
+        tool = tl.get("tool") or "メジャー"
+        per = f"、{tl['n']} で割った" if tl["n"] > 1 else ""
+        parts = [f"{tl.get('ref_name') or tl['ref']} {tl['value']} m（{tool} {tl['photo']}：{tl['read']}{per}）"]
+    else:
+        parts = [f"タイルの周期 {tl['value']} m（メジャー {tl['photo']}：{tl['read']}、{tl['n']} 枚）"]
     if count:
         how = "で 1 枚ずつ印を付けて数えた" if cl and cl.get("counted") else "で数えた"
         again = ""
@@ -997,18 +1181,35 @@ def write_chain(building: str, face: str, key: str, m: dict, *, rescale: dict | 
 
 def add_args(p) -> None:
     s = p.add_subparsers(dest="measure_cmd", required=True)
-    q = s.add_parser("tape", help="メジャーの目盛り（係が読んだ cm）と枚数から周期と ± → sokuryo_tape_<写真id>.json")
+    q = s.add_parser("tape", help="メジャー・距離計の目盛り（係が読んだ cm）から物差しの値と ± → sokuryo_tape_<写真id>[__<種類>_<名前>].json")
     q.add_argument("photo")
-    q.add_argument("--read", required=True, help='目盛り cm（例 "0→91.0"）。両端はタイルの目地の芯')
-    q.add_argument("--n", type=int, required=True, help="またがったタイルの枚数")
-    q.add_argument("--what", required=True, choices=sorted(AXIS_OF))
+    q.add_argument("--read", required=True, help='目盛り cm（例 "0→91.0"）。タイルは目地の芯から芯、長さは物の縁から縁')
+    q.add_argument("--n", type=int, required=True, help="タイル：またがった枚数。長さ：同じ物をまとめて測った数（ふつう 1）")
+    q.add_argument("--what", required=True, choices=sorted(AXIS_OF),
+                   help="tile_pitch_h|v＝タイルの周期、length_h|v＝直接測った長さ（柱型の幅・柱間・扉など）")
+    q.add_argument("--ref", default=None, help="長さの物差しの名前（英数字、例 pier_f6）。length_h|v では必須")
+    q.add_argument("--ref-name", default=None, help="人が読む説明（例「f6 の柱型の幅（1 階）」）")
+    q.add_argument("--tool", default=None, help="測った道具（巻尺・距離計）。± はどちらも両端 0.5 cm で積む")
     q.add_argument("--building", required=True)
     q.add_argument("--face", default=None)
     q.add_argument("--by", default="", help="読んだ係とモデル")
     q.add_argument("--reports", default=None, help="既定 data/reports（試す時は一時フォルダ）")
+    q = s.add_parser("span", help="正面化した面の帯で、くり返す要素（柱型など）の幅と間を px で → <画像>_span.json（鎖の px_ratio に使う）")
+    q.add_argument("front_jpg")
+    q.add_argument("--photo", required=True, help="正面化の元の写真 id")
+    q.add_argument("--face", default=None)
+    q.add_argument("--box", action="append", required=True, metavar="X0,Y0,X1,Y1",
+                   help="要素が並ぶ帯（px）。何本でも（行ごとにまとめて平均）")
+    q.add_argument("--axis", default="x", choices=["x", "y"], help="要素が並ぶ向き（x＝横に並ぶ柱型）")
+    q.add_argument("--width-px", type=float, nargs=2, required=True, metavar=("LO", "HI"), help="要素の幅の範囲（px）")
+    q.add_argument("--spacing-px", type=float, nargs=2, default=None, metavar=("LO", "HI"),
+                   help="要素の間の範囲（px）。画像を見て渡すと、窓枠などの余計な縁を飛ばして間を取る（無ければ隣どうし＋中央値で外す）")
+    q.add_argument("--dark", action="store_true", help="要素が周りより暗い（既定は明るい：柱型の面と窓の凹みの影）")
+    q.add_argument("--out", default=None, help="既定 <画像>_span.json")
     q = s.add_parser("pitch", help="棟のメジャー写真の周期を突き合わせて棟の周期を決める（--write-rulers で物差し台帳に）")
     q.add_argument("building")
     q.add_argument("--what", required=True, choices=sorted(AXIS_OF))
+    q.add_argument("--ref", default=None, help="長さの物差しの名前（length_h|v の時）")
     q.add_argument("--write-rulers", action="store_true")
     q.add_argument("--rulers", default=None, help="既定 data/rulers.json（試す時は写し）")
     q.add_argument("--reports", default=None)
@@ -1023,11 +1224,15 @@ def add_args(p) -> None:
     q.add_argument("--wall-box", type=float, nargs=4, default=None, metavar=("X0", "Y0", "X1", "Y1"),
                    help="壁の範囲（無ければ正面化の JSON の wall_box か画像全体）")
     q.add_argument("--out", default=None, help="既定 <front>_uniform_<what>.json")
-    q = s.add_parser("chain", help="周期 × 枚数（× px の比）で値と鎖 → sokuryo_chain_<面>.json")
+    q = s.add_parser("chain", help="物差し（タイルの周期か直接測った長さ）× 枚数 × px の比で値と鎖 → sokuryo_chain_<面>.json")
     q.add_argument("building")
     q.add_argument("--face", required=True)
     q.add_argument("--key", required=True, help="値の名前（bay_pitch・floor_pitch・length など。前の値の照合にも使う）")
     q.add_argument("--what", required=True, choices=sorted(AXIS_OF))
+    q.add_argument("--ref", default=None, help="長さの物差しの名前（length_h|v の時。measure tape --ref と同じ）")
+    q.add_argument("--span", default=None, help="measure span の結果 JSON（px の比を手で打たずにここから取る）")
+    q.add_argument("--span-use", default="spacing/width", choices=["spacing/width", "width/spacing"],
+                   help="spacing/width＝物差しが要素の幅で、間を出す。width/spacing＝物差しが間で、幅を出す")
     q.add_argument("--pitch-from", default=None, help="別の棟の周期を使う（その棟にメジャー写真が無い時だけ。estimated・申告の輪）")
     q.add_argument("--count", type=int, default=None)
     q.add_argument("--count-photo", default=None)
@@ -1112,12 +1317,14 @@ def _cli_chain(a, reports: Path | None) -> int:
     if a.ratio_from_h:
         return _cli_ratio_from_h(a, reports)
     src = a.pitch_from or a.building
-    if a.pitch_from and a.pitch_from != a.building and pitch_summary(a.building, a.what, reports).get("value") is not None:
+    ref = getattr(a, "ref", None)
+    if a.pitch_from and a.pitch_from != a.building and pitch_summary(a.building, a.what, reports, ref).get("value") is not None:
         print(f"{a.building} にメジャーの読みがあるので、別の棟（{a.pitch_from}）の周期は使いません")
         return 2
-    s = pitch_summary(src, a.what, reports)
+    s = pitch_summary(src, a.what, reports, ref)
     if s.get("value") is None:
-        print(f"{src} に {a.what} のメジャーの読みがありません（measure tape を先に。無ければ PLATEAU で estimated）")
+        name = f"{a.what}（{ref}）" if ref else a.what
+        print(f"{src} に {name} のメジャーの読みがありません（measure tape を先に。無ければ PLATEAU で estimated）")
         return 1
     count = None
     if a.count is not None or a.count_marks:
@@ -1155,6 +1362,12 @@ def _cli_chain(a, reports: Path | None) -> int:
             return 2
         wt = a.ratio_what[i] if a.ratio_what and i < len(a.ratio_what) else ""
         ratios.append({"photo": ph, "px": list(r), "what": wt})
+    if getattr(a, "span", None):
+        sp = json.loads(Path(a.span).read_text(encoding="utf-8"))
+        if sp.get("face") and sp["face"] != a.face:
+            print(f"{a.span} は面 {sp['face']} の物です（{a.face} ではない）")
+            return 2
+        ratios.append(span_ratio(sp, a.span_use))
     m = build_chain(building=a.building, face=a.face, pitch=s, count=count, uniform=uni, ratios=ratios)
     rs = rescale_record(m, _baseline(a.building, a.face, a.key, reports, Path(a.buildings) if a.buildings else None))
     p = write_chain(a.building, a.face, a.key, m, rescale=rs, scale=scale, reports=reports)
@@ -1167,21 +1380,59 @@ def _cli_chain(a, reports: Path | None) -> int:
     return 0
 
 
+def _cli_span(a) -> int:
+    from .rectify import read_image
+
+    f = Path(a.front_jpg)
+    img = read_image(f)
+    if img is None:
+        print(f"画像が読めません: {f}")
+        return 2
+    rows = []
+    for b in a.box:
+        box = [float(v) for v in b.split(",")]
+        if len(box) != 4:
+            print(f"--box は X0,Y0,X1,Y1: {b}")
+            return 2
+        r = element_spans(img, box=box, axis=a.axis, width_px=tuple(a.width_px), bright=not a.dark,
+                          spacing_px=tuple(a.spacing_px) if a.spacing_px else None)
+        rows.append(r)
+        state = (f"要素 {len(r['elements'])}・幅 {r['widths']}・間 {r['spacings']}"
+                 + (f"（外した間 {r['dropped_spacings']}）" if r["dropped_spacings"] else "")) if r["ok"] else r["reason"]
+        print(f"帯 {r['box']}：{state}")
+    s = span_summary(rows, photo=a.photo, face=a.face, image=f.as_posix())
+    out = Path(a.out) if a.out else f.with_name(f.stem + "_span.json")
+    out.write_text(json.dumps(s, ensure_ascii=False, indent=1), encoding="utf-8")
+    if not s["ok"]:
+        print(f"使えません：{s.get('reason')} → {out}")
+        return 1
+    print(f"幅 {s['width_px']} px（ばらつき {s['width_sd_px']}、{s['n_widths']} 個）・間 {s['spacing_px']} px"
+          f"（ばらつき {s['spacing_sd_px']}、{s['n_spacings']} 個）・縁の読みの ± {s['px_tol']} px → {out}")
+    return 0
+
+
 def run_cli(a) -> int:
     reports = Path(a.reports) if getattr(a, "reports", None) else None
     try:
         if a.measure_cmd == "tape":
-            ln = tape_link(a.photo, a.read, a.n, a.what)
+            ln = tape_link(a.photo, a.read, a.n, a.what, ref=a.ref, ref_name=a.ref_name, tool=a.tool)
             p = write_tape(ln, building=a.building, face=a.face, reports=reports, by=a.by)
-            print(f"{a.photo}：{ln['read']} ÷ {ln['n']} 枚 = 周期 {ln['value']} m ± {ln['tol']} m → {p}")
-            s = pitch_summary(a.building, a.what, reports)
+            if is_length(a.what):
+                print(f"{a.photo}：{ln.get('ref_name') or ln['ref']} {ln['read']}" + (f" ÷ {ln['n']}" if ln["n"] > 1 else "")
+                      + f" = {ln['value']} m ± {ln['tol']} m → {p}")
+            else:
+                print(f"{a.photo}：{ln['read']} ÷ {ln['n']} 枚 = 周期 {ln['value']} m ± {ln['tol']} m → {p}")
+            s = pitch_summary(a.building, a.what, reports, a.ref)
             write_pitch_summary(s, reports)
-            print(f"棟 {a.building} の {a.what}：{s['value']} m ± {s['tol']}（{s['photo']}）、検算 {len(s['checks'])} 枚")
+            name = f"{a.what}（{a.ref}）" if a.ref else a.what
+            print(f"棟 {a.building} の {name}：{s['value']} m ± {s['tol']}（{s['photo']}）、検算 {len(s['checks'])} 枚")
             for w in s["warnings"]:
                 print("警告：" + w)
             return 0
+        if a.measure_cmd == "span":
+            return _cli_span(a)
         if a.measure_cmd == "pitch":
-            s = pitch_summary(a.building, a.what, reports)
+            s = pitch_summary(a.building, a.what, reports, a.ref)
             p = write_pitch_summary(s, reports)
             print(f"棟 {a.building} の {a.what}：{s['value']} m ± {s['tol']}（{s['photo']}）、検算 {len(s['checks'])} 枚 → {p}")
             for c in s["checks"]:

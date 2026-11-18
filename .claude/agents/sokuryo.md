@@ -31,6 +31,12 @@ tools: Bash, Read, Glob, Grep
      7. measured になるのは鎖が tape・count・px_ratio・uniform_period だけの時。メジャーが別の面（assume）、一様の根拠が無い（assume）、別の棟の周期（claim）は道具が estimated にする。tol は道具が輪ごとに積む（tape 0.5 cm ÷ 区間、count ±1 枚 ÷ 枚数（2 枚目で一致すれば 0）、px_ratio ±1 px、uniform_period のばらつきの半分）。
    - **縦のメジャー写真が無い時**は、同じ正面化画像の px の比で縦を出し、近接の縦の読みで検算する：`recorder measure chain <棟id> --face <面> --key tile_pitch_v --what tile_pitch_v --ratio-from-h <front.jpg> --photo <写真id> --h-box <横に長くタイルが続く帯> --v-box <縦に長くタイルが続く柱型>`（横 n 枚・縦 n 段にまたがる長さの px を 1 行・1 列ずつの自己相関で取る。馬踏みでも横の周期が半分に出ない）。
      近接の縦の読み（1 段だけの写真）は ± が大きいので根拠にせず、差（%）を method の外の報告に書く。
+   - **タイルが無い面・タイルが読めない面（11/19）**：物差しはタイルに限らない。巻尺か距離計で 1 度測れる長さ（柱型の幅・柱間・扉の幅や高さ）を物差しにし、同じ正面化画像の px の比で面の値へつなぐ。タイルを先に使うのは、くり返しが多く ± が一番狭くなるから（本部棟 f6：タイルの鎖 5.310 m、柱型の幅 0.92 m からは 5.374・5.348 m、どちらも ± の中）。
+     1. 読む：物の縁から縁まで（例 柱型の左の角に爪を掛けて右の角まで `0→92.0`）。`recorder measure tape <写真id> --read "0→92.0" --n 1 --what length_h|length_v --ref <英数字の名前 例 pier_f6> --ref-name "<人が読む説明>" --tool 巻尺|距離計 --building <棟> --face <面>` → `sokuryo_tape_<写真id>__<種類>_<名前>.json`（同じ写真のタイルの読みとは別のファイル）。
+     2. 解像度を上げた面の画像：`recorder facade views <棟> --faces <面> --px-per-m 120 --photos <写真id,…>` → `out/facade_ppm120/<棟>/<面>/`（窓の検出用の 40 px/m とは別のフォルダ）。
+     3. 幅と間：画像を見て、要素（柱型）が窓の凹みの影と交互に並ぶ帯を選び、垂れ幕・木・人の写る所は外す。`recorder measure span <画像> --photo <写真id> --face <面> --box x0,y0,x1,y1 [--box …] --width-px <下> <上> [--spacing-px <下> <上>]` → 幅・間の平均とばらつき、縁の読みの ±（既定 1 px とばらつきの大きい方）。間がそろわない時は余計な縁（窓枠など）を拾っているので、画像で間の範囲を見て `--spacing-px` を渡す。
+     4. 鎖：`recorder measure chain <棟> --face <面> --key <名前> --what length_h --ref <名前> --span <span.json> [--span-use spacing/width|width/spacing]` → tape → px_ratio の鎖（同じ面なら measured）。px の比は手で打たない（span の JSON から取る）。
+     5. 比が正しいのは、物差しと測りたい物が**同じ面の上**にある時だけ（窓の凹みの奥の縁と柱型の表の縁を混ぜると、写真の倍率が奥行きで変わる）。縦の長さを横の物差しから出す時は「正面化画像の縦横の縮尺が同じ」の仮定が入る。
    - **棟をまたいで周期を使う時**（その棟にメジャー写真が無い時だけ）：`measure chain <棟> --pitch-from <メジャーのある棟> …` → 申告（claim）の輪が入り estimated。利用者の「同じタイル」は確かめる物で根拠ではない。その棟にメジャーの読みがあれば道具が断る。
    - **メジャーが無い時**：今までどおり PLATEAU 以下で換算し `estimated`。止めない。撮影依頼に「<面>：メジャーを壁に沿えて 1 枚（柱型の幅か窓の開口、タイル 10 段）」を 1 件だけ足す（同じ棟で 2 件出さない）。
    - タイルを物差しにする時は、写真で種類（二丁掛・小口・45 二丁など）を確かめた写真 id を method に書く。確かめていなければ「種類未確認」と書き、2 本目の物差しに数えない

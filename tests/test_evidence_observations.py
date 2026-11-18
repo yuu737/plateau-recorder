@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from recorder import evidence as E
+from recorder import observations as E
 from recorder.run import count_statuses
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,18 +74,6 @@ def test_different_evidence_is_a_different_observation():
     o = E.observations(b)
     assert o["observations"] == 7
     assert o["eyeball"] == {"values": 4, "observations": 2}
-
-
-def test_line_and_summary_text_have_observations():
-    o = E.observations(_building())
-    line = E.observations_line(o)
-    assert line.startswith("値 measured 1 / estimated 13 / unknown 1")
-    assert "独立した観察 measured 1 / estimated 4 / unknown 1（複製 9）" in line
-    pl = {"name": "試し", "building": "t", "counts": E.status_counts(_building()), "observations": o,
-          "photos": [], "faces": ["A", "B"]}
-    md = E.summary_text(pl)
-    assert "独立した観察" in md and E.OBS_NOTE in md and "| 観察 |" in md
-    assert "| A | 0 | 9 | 1 | 4 |" in md
 
 
 def test_tower75_observations_far_fewer_than_values():

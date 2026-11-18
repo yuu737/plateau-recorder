@@ -151,27 +151,3 @@ def test_override_relative_grid_for_model():
 
 
 # --- 書き出し ----------------------------------------------------------------------------
-
-def test_export_web_writes_mask_and_overrides(tmp_path):
-    if not (site.DATA_SITE / "tempaku.json").exists() or not (site.OUT_SITE / "dem5a.npz").exists():
-        pytest.skip("敷地 JSON か標高が無い")
-    doc = json.loads((site.DATA_SITE / "tempaku.json").read_text(encoding="utf-8"))
-    if not doc.get("ground_osm") and not (site.DATA_SITE / "cache" / "osm_ground_raw.json").exists():
-        pytest.skip("OSM の地表の種類が未取得（ネットに出ない）")
-    site.export_web(web_dir=tmp_path)
-    d = json.loads((tmp_path / "data" / "site.json").read_text(encoding="utf-8"))
-    g = d["ground"]
-    m = g["mask"]
-    assert (tmp_path / m["url"]).exists() and (tmp_path / "data" / "ground_mask.json").exists()
-    assert [k["kind"] for k in m["kinds"]] == list(site.GROUND_KINDS)
-    assert m["license"] == "ODbL" and m["status"] == "estimated"
-    assert m["x0"] == g["x0"] and m["w"] == (g["nx"] - 1) * g["step"]
-    assert m["counts"]["asphalt"]["area_m2"] > 0
-    for o in g["overrides"]:
-        assert o["evidence"] is not None and ("method" in o) == o["applied"]
-        assert o["applied"] or o["skipped"]
-
-
-def test_viewer_uses_mask_and_override_frames():
-    html = (Path(site.__file__).resolve().parent.parent / "web" / "index.html").read_text(encoding="utf-8")
-    assert "groundMaskShader" in html and "G.overrides" in html and "OpenStreetMap" in html

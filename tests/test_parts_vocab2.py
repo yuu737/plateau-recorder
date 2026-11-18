@@ -124,9 +124,6 @@ def test_patch_thin_plate_off_wall():
     b2 = load()
     del part(b2, "patch")["material"]
     assert any("material" in e for e in errs_for(b2, "patch"))
-    b3 = load()
-    part(b3, "patch")["material"] = "asset:no_such_texture"
-    assert any("no_such_texture" in e for e in schema.validate_building(b3))
 
 
 # --- 6. vestibule -------------------------------------------------------------------

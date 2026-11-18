@@ -642,30 +642,9 @@ def _check_composite(pt: dict, where: str) -> list[str]:
     return errs
 
 
-def _catalog_or_error() -> tuple[dict | None, str | None]:
-    try:
-        from . import assets
-    except ImportError:  # recorder/ を sys.path に入れて読んだとき
-        import assets  # type: ignore[no-redef]
-    try:
-        return assets.load_catalog(), None
-    except (OSError, ValueError) as e:
-        return None, f"アセットの台帳 data/assets/catalog.json が読めません（{e}）"
-
-
 def _catalog_kind(aid: str, want: str, where: str) -> list[str]:
-    cat, err = _catalog_or_error()
-    if err:
-        return [f"{where}: {err}"]
-    it = next((x for x in cat.get("items", []) if x.get("id") == aid), None)
-    if it is None:
-        return [f"{where}: アセット {aid} は台帳 data/assets/catalog.json にありません"]
-    out = []
-    if it.get("kind") != want:
-        out.append(f"{where}: アセット {aid} は {it.get('kind')} です（{want} が要ります）")
-    if it.get("license") != "CC0-1.0":
-        out.append(f"{where}: アセット {aid} は CC0 ではないので使えません")
-    return out
+    """PLATEAU 版では CC0 アセットの台帳を持たない（置物は LOD3 に入れない）。id の形だけ見る。"""
+    return [] if isinstance(aid, str) and aid else [f"{where}: asset の id がありません"]
 
 
 def _check_asset_part(pt: dict, where: str) -> list[str]:
@@ -700,18 +679,8 @@ def _check_asset_part(pt: dict, where: str) -> list[str]:
 
 
 def _asset_materials(obj, where: str) -> list[str]:
-    """"material": "asset:<id>" を全部探し、台帳の texture か調べる。"""
-    errs: list[str] = []
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            if k == "material" and isinstance(v, str) and v.startswith(ASSET_PREFIX):
-                errs += _catalog_kind(v[len(ASSET_PREFIX):], "texture", f"{where}.material")
-            else:
-                errs += _asset_materials(v, f"{where}.{k}")
-    elif isinstance(obj, list):
-        for i, v in enumerate(obj):
-            errs += _asset_materials(v, f"{where}[{i}]")
-    return errs
+    """PLATEAU 版では質感（asset:<id>）を台帳で確かめない（LOD3 は質感を書き出さない）。"""
+    return []
 
 
 # --- 依頼（requests）の宛先 ------------------------------------------------------------------
@@ -719,7 +688,7 @@ def _asset_materials(obj, where: str) -> list[str]:
 # 各項目は任意の欄 to（"staff"＝職員に撮ってもらう／"tool"＝道具・係の作業）を持てる。
 # 無い物は文面から決める（request_to）。報告と職員の画面の「撮影依頼」は staff 宛てだけを数える。
 REQUEST_TO = ("staff", "tool")
-_REQ_TOOL_RE = re.compile(r"recorder/|scripts/|\.py\b|語彙|欄|調べ物|撮影でなく")
+_REQ_TOOL_RE = re.compile(r"recorder/|scripts/|\.py|語彙|欄|調べ物|撮影でなく")
 _REQ_STAFF_RE = re.compile(r"撮|写真|枚")
 _REQ_ID_PATH_RE = re.compile(r"^[A-Za-z0-9_.\[\]:/-]+$")     # where が JSON の道（interior.rooms[x].floor など）
 _REQ_VIEW_RE = re.compile(r"から(?:[、（(]|$)|\d+\s*°|正面|真横|斜め")      # 「45° から」「正面で」など撮る向きの言い方

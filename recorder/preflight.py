@@ -42,17 +42,8 @@ def _check_env(cwd: Path, bid: str, todo: list[str], out: list, call_models: boo
         _item(out, OK, "API キー", "ANTHROPIC_API_KEY がこのタブにある")
     else:
         _item(out, NG if call_models else WARN, "API キー",
-              "ANTHROPIC_API_KEY がこのタブに無い（serve を立てるタブに要る。--call-models は確かめられない）",
-              "キーのあるタブで serve を立て、そのタブで preflight --call-models を走らせる")
-    if any(s in ("seizu", "seizu_final") for s in todo):
-        b = os.environ.get("BLENDER")
-        if not b:
-            _item(out, NG, "BLENDER", "環境変数 BLENDER が無い（製図の工程 seizu・seizu_final が Blender 5.2 を起動できない）",
-                  "serve を立てるタブで BLENDER に Blender 5.2 の blender.exe のパスを入れる")
-        elif not Path(b).exists():
-            _item(out, NG, "BLENDER", f"BLENDER のパス {b} にファイルが無い", "Blender 5.2 の blender.exe のパスに直す")
-        else:
-            _item(out, OK, "BLENDER", f"{b}")
+              "ANTHROPIC_API_KEY がこのタブに無い（係を API で動かすタブに要る。--call-models は確かめられない）",
+              "キーのあるタブで preflight --call-models を走らせる")
     venv = (cwd / ".venv").resolve()
     exe = Path(sys.executable).resolve()
     if venv.exists() and venv not in exe.parents:
@@ -318,7 +309,7 @@ def _call_models(cwd: Path, defs: dict, out: list) -> None:
 
 
 def run(building_id: str, *, cwd: str | Path = ".", call_models: bool = False, port: int = DEFAULT_SERVE_PORT,
-        check_serve: bool = True) -> dict:
+        check_serve: bool = False) -> dict:
     """点検して {"building", "ok", "ng", "warn", "items", "plan", "made_at"} を返す（out/<棟>/preflight.json にも書く）。"""
     cwd = Path(cwd).resolve()
     items: list[dict] = []
