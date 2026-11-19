@@ -16,6 +16,8 @@ for sink in geojson 3dtiles gltf; do
   # 3D Tiles と glTF は「テクスチャ付きで最も細かい LOD」を選ぶ（変換ツールの GUI の「テクスチャ付き最大」）
   T=()
   if [ "$sink" != geojson ]; then T=(-t use_lod=textured_max_lod); fi
+  # glTF は出力を平面直角座標系にしないと止まる（「glTF sink requires a Japan Plane Rectangular coordinate system」）。名古屋は VII 系
+  if [ "$sink" = gltf ]; then T+=(--epsg 6675); fi
   "$NUSAMAI" "$GML" --sink "$sink" --output "$OUT/$sink" --schema "$OUT/schema_$sink.json" "${T[@]}" > "$OUT/log_$sink.txt" 2>&1
   echo "終了コード $?"
   tail -5 "$OUT/log_$sink.txt"

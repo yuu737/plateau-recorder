@@ -1,4 +1,5 @@
-"""壁の質感の合成（recorder/lod3/wall_texture.py）：足切り、遮蔽の中央値、塗りつぶしの除外、2 の累乗、テクスチャ座標。"""
+"""壁の質感の合成（recorder/lod3/wall_texture.py）：足切り、遮蔽の中央値、塗りつぶしの除外、解像度の変換と上限。
+アトラスは tests/test_texture_atlas.py。"""
 import json
 
 import cv2
@@ -57,7 +58,7 @@ def test_face_views_filters_and_orders(face):
 
 def test_compose_removes_occluder_and_matches_colour(face):
     use, _ = WT.face_views("b1", "f1", None, root=face)
-    img, info = WT.compose((0.0, 10.0, 0.0, 5.0), use)
+    img, info = WT.compose((0.0, 10.0, 0.0, 5.0), use, ppm=40.0)
     assert img.shape == (200, 400, 3) and info["coverage"] == 1.0 and info["coverage_median"] == 1.0
     # 1 枚にだけ写った木は中央値で消え、明るい写真は倍率で合わせられて、壁の色にそろう
     assert np.abs(img[100, 150].astype(int) - (60, 140, 200)).max() <= 8
@@ -84,18 +85,15 @@ def test_unseen_area_is_filled_from_the_next_bay():
     assert info2["filled_by_inpaint"] > 0 and info2["filled_by_repeat"] == 0.0
 
 
-def test_unseen_area_is_filled_and_pow2():
-    img = np.zeros((10, 10, 3), np.uint8)
-    out, k, size = WT.to_pow2(np.zeros((300, 3000, 3), np.uint8))
-    assert size == (2048, 256) and out.shape == (256, 2048, 3) and k == pytest.approx(2048 / 3000)
-    assert tuple(out[-1, -1]) == WT.PAD_RGB[::-1]
-    out, k, size = WT.to_pow2(img)
-    assert size == (16, 16) and k == 1.0
+def test_compose_resamples_views_to_the_texture_resolution(face):
+    use, _ = WT.face_views("b1", "f1", None, root=face)
+    img, info = WT.compose((0.0, 10.0, 0.0, 5.0), use)              # 面の画像は 40 px/m、質感は 80 px/m
+    assert WT.PPM == 80.0 and img.shape == (400, 800, 3) and info["px_per_m"] == 80.0
+    assert info["coverage"] > 0.98
+    assert np.abs(img[200, 300].astype(int) - (60, 140, 200)).max() <= 8      # 木は 80 px/m でも中央値で消える
 
 
-def test_tex_coords_follow_the_face():
-    p0, u = np.array([0.0, 0.0]), np.array([1.0, 0.0])
-    P = np.array([[0.0, 0.0, 5.0], [10.0, 0.0, 5.0], [10.0, 0.0, 0.0]])
-    uv = WT.tex_coords(P, p0, u, (0.0, 10.0, 0.0, 5.0), 40.0, 1.0, (512, 256))
-    assert uv[0] == pytest.approx((0.0, 1.0)) and uv[1] == pytest.approx((400 / 512, 1.0))
-    assert uv[2] == pytest.approx((400 / 512, 1.0 - 200 / 256))
+def test_face_ppm_caps_to_the_page():
+    assert WT.face_ppm((0.0, 50.0, 0.0, 22.7)) == 80.0                       # 本部棟の正面 50 m → 4000 px で収まる
+    p = WT.face_ppm((0.0, 25.0, 0.0, 71.6))                                   # タワー75 の高さ 72 m
+    assert p < 80.0 and 71.6 * p + 4 <= 4096

@@ -32,6 +32,7 @@ from .registry import entries_for, expand_entries, face_top, load_registry, plan
 from .schema import load_building
 
 PX_PER_M = 40.0
+PUBLIC_PX_PER_M = 80.0      # 公開版の面の画像（質感の元）の解像度。窓の検出用の 40 px/m の切り出しとマスクを倍にして使う
 OUT_ROOT = Path("out") / "facade"
 RESULT_FILES = ("detections.json", "fused.json", "refined.json", "final.json", "compare.json")   # 面のフォルダの、写真ごとでない結果
 MIN_USABLE_M2 = 4.0          # これ未満しか使えない写真は面の画像を作らない
@@ -133,9 +134,11 @@ def views(bid: str, faces: list[str] | None = None, ppm: float = PX_PER_M, out_r
 PUBLIC_ROOT = Path("out") / "facade_public"
 
 
-def public_views(bid: str, faces: list[str] | None = None, out_root: Path | None = None, registry: dict | None = None) -> dict:
-    """表示・動画用の面の画像を、公開版の写真（掲示物・人名・顔・ナンバーを灰色の箱で塗った版。長辺 1600 px、
-    索引の public_file）から作る。切り出しと使えない所は views（元の写真から作った画像）と同じ。
+def public_views(bid: str, faces: list[str] | None = None, out_root: Path | None = None, registry: dict | None = None,
+                 ppm: float | None = None) -> dict:
+    """表示・動画・質感用の面の画像を、公開版の写真（掲示物・人名・顔・ナンバーを灰色の箱で塗った版。元の解像度の
+    public_full_file があればそれ、無ければ長辺 1600 px の public_file）から作る。切り出しと使えない所は views
+    （元の写真から作った 40 px/m の画像）と同じ範囲で、解像度だけ ppm（既定 PUBLIC_PX_PER_M＝80 px/m）にする。
     元の写真から作った画像は寸法を測るためだけに使い、人に見せる物はこちらにする（塗っていないため）。"""
     import cv2
 
@@ -177,12 +180,16 @@ def public_views(bid: str, faces: list[str] | None = None, out_root: Path | None
             pub0 = cv2.imdecode(np.fromfile(str(Path("data") / "photos" / pub_rel), np.uint8), cv2.IMREAD_COLOR)
             W, H = e["image_size"]
             pub = cv2.resize(pub0, (int(W), int(H)), interpolation=cv2.INTER_LINEAR)     # 元の写真の画素の座標にそろえる
-            warped = CV.warp_to_face(pub, e, f, rect, meta["px_per_m"], meta["median_photo_px_per_m"])
-            x0, y0, x1, y1 = meta["crop_px"]
-            crop = warped[y0:y1, x0:x1]
-            mask = cv2.imdecode(np.fromfile(str(fdir / meta["mask"]), np.uint8), cv2.IMREAD_GRAYSCALE) > 0
+            p_out = float(ppm or PUBLIC_PX_PER_M)
+            r = p_out / float(meta["px_per_m"])               # 窓の検出用（40 px/m）の切り出し → この解像度
+            warped = CV.warp_to_face(pub, e, f, rect, p_out, meta["median_photo_px_per_m"])
+            x0, y0, x1, y1 = (int(round(v * r)) for v in meta["crop_px"])
+            crop = _crop_pad(warped, x0, y0, x1, y1, GRAY)
+            mask = cv2.imdecode(np.fromfile(str(fdir / meta["mask"]), np.uint8), cv2.IMREAD_GRAYSCALE)
+            mask = cv2.resize(mask, (x1 - x0, y1 - y0), interpolation=cv2.INTER_NEAREST) > 0
             crop[~mask] = GRAY
-            cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 90])[1].tofile(str(out / meta["image"]))
+            cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 92])[1].tofile(str(out / meta["image"]))
+            cv2.imencode(".png", mask.astype(np.uint8) * 255)[1].tofile(str(out / meta["mask"]))
             # 塗りつぶした所（個人情報の灰色の箱）のマスク：元の写真と公開版の差が大きい所。質感の合成でこの画素を使わない
             # （写真ごとに箱の位置が少しずつ違うので、そのまま重ねると箱と文字が透けて残る）
             orig = CV._load_photo(e)
@@ -193,16 +200,27 @@ def public_views(bid: str, faces: list[str] | None = None, out_root: Path | None
                 d = cv2.morphologyEx(d, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
                 d = cv2.dilate(cv2.morphologyEx(d, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8)), np.ones((5, 5), np.uint8))
                 dm = cv2.resize(d * 255, (int(W), int(H)), interpolation=cv2.INTER_NEAREST)
-                wm = CV.warp_to_face(cv2.cvtColor(dm, cv2.COLOR_GRAY2BGR), e, f, rect, meta["px_per_m"], meta["median_photo_px_per_m"])
+                wm = CV.warp_to_face(cv2.cvtColor(dm, cv2.COLOR_GRAY2BGR), e, f, rect, p_out, meta["median_photo_px_per_m"])
                 redact_name = f"{meta['photo']}_redact.png"
-                cv2.imencode(".png", ((wm[y0:y1, x0:x1, 0] > 127) * 255).astype(np.uint8))[1].tofile(str(out / redact_name))
-            (out / mj.name).write_text(json.dumps({**meta, "source": f"公開版の写真（data/photos/{pub_rel}、塗りつぶし済み）",
+                cv2.imencode(".png", ((_crop_pad(wm, x0, y0, x1, y1, (0, 0, 0))[:, :, 0] > 127) * 255).astype(np.uint8))[1].tofile(str(out / redact_name))
+            (out / mj.name).write_text(json.dumps({**meta, "px_per_m": p_out, "crop_px": [x0, y0, x1, y1],
+                                                   "mask_from": f"out/facade/{bid}/{fid}/{meta['mask']}（{meta['px_per_m']:g} px/m を最近傍で拡大）",
+                                                   "source": f"公開版の写真（data/photos/{pub_rel}、塗りつぶし済み）",
                                                    "public_long": int(max(pub0.shape[:2])),
                                                    **({"redact_mask": redact_name} if redact_name else {})},
                                                   ensure_ascii=False, indent=1), encoding="utf-8")
             n += 1
         res["faces"].append({"face": fid, "views": n})
     return res
+
+
+def _crop_pad(img: np.ndarray, x0: int, y0: int, x1: int, y1: int, fill) -> np.ndarray:
+    """img[y0:y1, x0:x1] を切り出す。格子の端で四捨五入により 1 px 足りなければ fill で埋めて大きさをそろえる。"""
+    out = np.empty((y1 - y0, x1 - x0) + img.shape[2:], img.dtype)
+    out[:] = fill
+    c = img[max(0, y0):y1, max(0, x0):x1]
+    out[max(0, -y0):max(0, -y0) + c.shape[0], max(0, -x0):max(0, -x0) + c.shape[1]] = c
+    return out
 
 
 def px_to_m(meta: dict, x: float, y: float) -> tuple[float, float]:
@@ -798,8 +816,9 @@ def add_args(p) -> None:
     p.add_argument("--faces", default=None, help="面 id（カンマ区切り。省略で写真のある面全部）")
     p.add_argument("--no-occlusion", action="store_true", help="PLATEAU の他の棟による遮蔽を使わない")
     p.add_argument("--min-n", type=int, default=2, help="compare で比べる窓の、写った写真の枚数の下限")
-    p.add_argument("--px-per-m", type=float, default=PX_PER_M,
-                   help=f"views の解像度（既定 {PX_PER_M:g}。上げた時は窓の検出用と混ざらないよう out/facade_ppm<N> に書く）")
+    p.add_argument("--px-per-m", type=float, default=None,
+                   help=f"views の解像度（既定 {PX_PER_M:g}。上げた時は窓の検出用と混ざらないよう out/facade_ppm<N> に書く）。"
+                        f"public では公開版の面の画像の解像度（既定 {PUBLIC_PX_PER_M:g}）")
     p.add_argument("--photos", default=None, help="views で使う写真 id（カンマ区切り。省略で全部）")
 
 
@@ -839,9 +858,10 @@ def run_cli(a) -> int:
             for f in r["faces"]:
                 print(f"{a.building} {f['face']}: 並び方で整えた窓 {f['windows']}（直した {f['adjusted']}・捨てた {f['dropped']}）")
         elif st == "public":
-            r = public_views(a.building, faces)
+            p_pub = float(getattr(a, "px_per_m", None) or PUBLIC_PX_PER_M)
+            r = public_views(a.building, faces, ppm=p_pub)
             for f in r["faces"]:
-                print(f"{a.building} {f['face']}: 公開版の面の画像 {f['views']} 枚（out/facade_public、塗りつぶしのマスク付き）")
+                print(f"{a.building} {f['face']}: 公開版の面の画像 {f['views']} 枚（{p_pub:g} px/m、out/facade_public、塗りつぶしのマスク付き）")
             if r["missing_public"]:
                 print(f"公開版の無い写真 {len(r['missing_public'])} 枚")
         elif st == "compare":

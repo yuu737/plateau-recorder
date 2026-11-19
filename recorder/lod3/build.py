@@ -1618,19 +1618,21 @@ def write_lod3(bel, b: dict, facets, insts, geo: Geo, evidence: dict, lod: str, 
     return rings_all, roof_rings, tex_polys
 
 
-def write_wall_textures(bn: str, b: dict, tex_polys: list, appearance, img_dir: Path, app_dir_name: str) -> dict:
-    """面ごとに公開版の写真から質感を合成し、app:ParameterizedTexture として壁と開口の多角形に貼る。戻り値は面ごとの記録。"""
-    import cv2
+_FACE_TEX: dict = {}       # (棟, 面, 範囲, 解像度) → (面の質感, 記録)。同じ実行の中の LOD3 の区分で使い回す
 
+
+def write_wall_textures(bn: str, b: dict, tex_polys: list, atlas) -> tuple[dict, list]:
+    """面ごとに公開版の写真から質感を合成し、アトラスに足す（書き出しは _build_one で全部の棟を詰めてから）。
+    戻り値 (面ごとの記録, [(アトラスの中の番号, 貼る先, 記録)])。貼る先は [(多角形の id, [(輪の id, xs, ys)])]、
+    xs・ys は面の画像の中の位置（左上の角が 0、px）。"""
     from .. import facade as FA
     from . import wall_texture as WT
 
-    APP = f"{{{NS['app']}}}"
     gks = gaiheki_reports(bn)
     byface = defaultdict(list)
     for tp in tex_polys:
         byface[tp["face"]].append(tp)
-    out = {}
+    out, items = {}, []
     for f in b.get("faces") or []:
         fid = f["id"]
         if fid not in byface or not (f.get("from") and f.get("to")):
@@ -1638,28 +1640,66 @@ def write_wall_textures(bn: str, b: dict, tex_polys: list, appearance, img_dir: 
         rect = FA.face_rect(b, f)
         if rect is None:
             continue
-        views, skipped = WT.face_views(bn, fid, gks.get(fid), root=CR)
-        img, info = WT.compose(rect, views, pitch_m=V((f.get("bays") or {}).get("pitch")))
-        info["skipped"] = skipped
+        ppm = WT.face_ppm(rect, WT.PPM, atlas.page, atlas.margin)
+        key = (bn, fid, tuple(round(x, 4) for x in rect), round(ppm, 4))
+        if key not in _FACE_TEX:              # 面の質感は LOD3 の区分によらないので、一斉に書き出す時は 1 回だけ作る
+            views, skipped = WT.face_views(bn, fid, gks.get(fid), root=CR)
+            img, info = WT.compose(rect, views, ppm=ppm, pitch_m=V((f.get("bays") or {}).get("pitch")))
+            if ppm < WT.PPM:
+                info["capped"] = f"1 辺が {atlas.page} px（余白込み）に収まるよう {WT.PPM:g} → {ppm:.1f} px/m に下げた"
+            info["skipped"] = skipped
+            _FACE_TEX[key] = (img, info)
+        img, info = _FACE_TEX[key][0], dict(_FACE_TEX[key][1])
         out[fid] = info
         if img is None:
             continue
-        timg, k, size = WT.to_pow2(img)
-        name = f"{bn}_{fid}.jpg"
-        img_dir.mkdir(parents=True, exist_ok=True)
-        cv2.imencode(".jpg", timg, [cv2.IMWRITE_JPEG_QUALITY, 88])[1].tofile(str(img_dir / name))
-        info.update({"image": f"{app_dir_name}/{name}", "image_px": list(size), "scale": round(k, 4)})
+        ai = atlas.add(img)
         p0, u, _, _ = face_axes(f)
+        s0, s1, z0, z1 = rect
+        targets = []
+        for tp in byface[fid]:
+            rings = []
+            for rid, R in zip(tp["rids"], tp["rings"]):
+                RR = np.vstack([R, R[:1]])
+                s_ = (RR[:, :2] - p0[:2]) @ u[:2]
+                rings.append((rid, (s_ - s0) * ppm, (z1 - RR[:, 2]) * ppm))
+            targets.append((tp["pid"], rings))
+        items.append((ai, targets, info))
+    return out, items
+
+
+def write_atlas(atlas, items: list, appearance, img_dir: Path, app_dir_name: str) -> dict:
+    """アトラスを詰めて画像に書き、1 枚ごとに app:ParameterizedTexture（貼る先は何枚もの多角形）を書く。"""
+    import cv2
+
+    APP = f"{{{NS['app']}}}"
+    atlas.pack()
+    rects = [atlas.rect(i) for i in range(len(atlas.items))]
+    pages = []
+    for pg in range(atlas.n_pages):
+        name = f"atlas_{pg + 1:02d}.jpg"
+        img = atlas.page_image(pg)
+        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 88])
+        buf.tofile(str(img_dir / name))
+        W, H = atlas.sizes[pg]
+        on = [r for r in rects if r["page"] == pg]
+        pages.append({"image": f"{app_dir_name}/{name}", "px": [W, H], "bytes": int(buf.size), "items": len(on),
+                      "filled": round(sum(r["w"] * r["h"] for r in on) / (W * H), 3)})
         sd = E(APP + "surfaceDataMember", appearance)
-        pt = E(APP + "ParameterizedTexture", sd, **{GM + "id": "tex_" + uid(bn, "wall", fid)})
+        pt = E(APP + "ParameterizedTexture", sd, **{GM + "id": "tex_" + uid("atlas", pg)})
         E(APP + "imageURI", pt, f"{app_dir_name}/{name}")
         E(APP + "mimeType", pt, "image/jpeg")
-        for tp in byface[fid]:
-            tcl = E(APP + "TexCoordList", E(APP + "target", pt, uri="#" + tp["pid"]))
-            for rid, R in zip(tp["rids"], tp["rings"]):
-                uv = WT.tex_coords(np.vstack([R, R[:1]]), p0, u, rect, WT.PPM, k, size)
-                E(APP + "textureCoordinates", tcl, " ".join(f"{a:.6f} {c:.6f}" for a, c in uv), ring="#" + rid)
-    return out
+        for ai, targets, info in items:
+            if atlas.place[ai][0] != pg:
+                continue
+            info.update({"image": f"{app_dir_name}/{name}", "atlas_rect": rects[ai]})
+            for pid, rings in targets:
+                tcl = E(APP + "TexCoordList", E(APP + "target", pt, uri="#" + pid))
+                for rid, xs, ys in rings:
+                    uv = atlas.uv(ai, xs, ys)
+                    E(APP + "textureCoordinates", tcl, " ".join(f"{a:.7f} {c:.7f}" for a, c in uv), ring="#" + rid)
+    return {"page_max_px": atlas.page, "margin_px": atlas.margin, "pages": pages,
+            "rule": "PLATEAU 標準製品仕様書 9.4 節：1 つの CityGML の分を、1 辺が 2 の累乗で 4096 px までの画像に詰める（回転・拡縮なし、左上から、余白 2 px）"}
 
 
 # ------------------------------------------------------------------ 立体の検査
@@ -1791,9 +1831,12 @@ def _build_one(args, lod: str, dataset_dir: Path, out: Path) -> dict:
     app_dir_name = "52365768_bldg_6697_appearance"
     ds_bldg = Path(dataset_dir) / "udx" / "bldg"
     (ds_bldg / app_dir_name).mkdir(parents=True, exist_ok=True)
+    for old in (ds_bldg / app_dir_name).glob("*.jpg"):            # 前の書き出しの画像（面ごと・棟ごと）を消す
+        old.unlink()
     appearance = E(f"{{{NS['app']}}}Appearance")
     E(f"{{{NS['app']}}}theme", appearance, "rgbTexture")
-    APP = f"{{{NS['app']}}}"
+    from . import atlas as AT
+    atlas, tex_items = AT.Atlas(), []
     for bn, b, rj, facets, insts, rep in built:
         k = leans[bn]["k"]
         for f in facets:
@@ -1820,27 +1863,23 @@ def _build_one(args, lod: str, dataset_dir: Path, out: Path) -> dict:
             llq = geo_rel.latlonh(Qp)
             px, py = mos.to_px(llq[:, 1], llq[:, 0])
             im, (x0, y0), scale = A.crop_texture(mos, px, py)
-            Wp, Hp = im.width / scale, im.height / scale
-            img_name = f"{bn}_roof.jpg"
-            im.save(ds_bldg / app_dir_name / img_name, "JPEG", quality=90)
-            sd = E(APP + "surfaceDataMember", appearance)
-            pt = E(APP + "ParameterizedTexture", sd, **{GM + "id": "tex_" + uid(bn, "roof")})
-            E(APP + "imageURI", pt, f"{app_dir_name}/{img_name}")
-            E(APP + "mimeType", pt, "image/jpeg")
+            ai = atlas.add(np.asarray(im.convert("RGB"))[:, :, ::-1].copy())
+            targets = []
             for rr in roof_rings:
-                tg = E(APP + "target", pt, uri="#" + rr["pid"])
-                tcl = E(APP + "TexCoordList", tg)
+                rings_uv = []
                 for rid, R in zip(rr["rids"], rr["rings"]):
                     RR = np.vstack([R, R[:1]])
                     Qr = np.column_stack([RR[:, 0] + k[0] * RR[:, 2], RR[:, 1] + k[1] * RR[:, 2], RR[:, 2]])
                     lr_ = geo_rel.latlonh(Qr)
                     qx, qy = mos.to_px(lr_[:, 1], lr_[:, 0])
-                    u = (qx - (x0 - 0.5)) / Wp
-                    v = 1.0 - (qy - (y0 - 0.5)) / Hp
-                    E(APP + "textureCoordinates", tcl, " ".join(f"{a:.6f} {c:.6f}" for a, c in zip(u, v)), ring="#" + rid)
-            rep["roof_texture"] = {"image": f"{app_dir_name}/{img_name}", "source": A.SOURCE}
+                    # 航空写真の画素の中心が整数 → 切り出した画像の中の位置（左上の角が 0）
+                    rings_uv.append((rid, (qx - (x0 - 0.5)) * scale, (qy - (y0 - 0.5)) * scale))
+                targets.append((rr["pid"], rings_uv))
+            rep["roof_texture"] = {"source": A.SOURCE, "size_px": [im.width, im.height]}
+            tex_items.append((ai, targets, rep["roof_texture"]))
         if args.wall_texture:
-            rep["wall_texture"] = write_wall_textures(bn, b, tex_polys, appearance, ds_bldg / app_dir_name, app_dir_name)
+            rep["wall_texture"], items = write_wall_textures(bn, b, tex_polys, atlas)
+            tex_items += items
         rep["closed"] = check_closed(rings)
         rep["plateau_gml_id"] = gid
         rep["surfaces"] = dict(sorted(((kk, sum(1 for f in facets if f.kind == kk)) for kk in SURF_TAG), key=lambda x: x[0]))
@@ -1851,11 +1890,15 @@ def _build_one(args, lod: str, dataset_dir: Path, out: Path) -> dict:
         print(f"{bn}: 面 {rep['surfaces']} 窓 {rep['windows']}（省いた {len(rep['openings_skipped'])}） 付属物 {len(insts)} "
               f"体積 {rep['volume_m3']} m3 閉じていない辺 {rep['closed']['unmatched_edges']} "
               f"倒れ込み k={leans[bn]['k']}（{leans[bn]['how']}）")
-    if args.roof_texture or args.wall_texture:
-        am = E(APP + "appearanceMember", model)
+    tag = lod.replace(".", "")
+    if tex_items:
+        at = write_atlas(atlas, tex_items, appearance, ds_bldg / app_dir_name, app_dir_name)
+        json.dump(at, open(out / f"atlas_lod{tag}.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+        print(f"質感のアトラス：{len(at['pages'])} 枚（"
+              + "、".join(f"{p['px'][0]}×{p['px'][1]} 埋まり {p['filled']:.0%}" for p in at["pages"]) + "）")
+        am = E(f"{{{NS['app']}}}appearanceMember", model)
         am.append(appearance)
 
-    tag = lod.replace(".", "")
     gml_path = ds_bldg / "52365768_bldg_6697_op.gml"
     etree.ElementTree(model).write(str(gml_path), xml_declaration=True, encoding="UTF-8", pretty_print=True)
     # PLATEAU の配布物と同じ並び（udx/bldg・codelists・schemas）にする。codeSpace は ../../codelists/… を指す
