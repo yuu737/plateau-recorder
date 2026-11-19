@@ -29,18 +29,9 @@ cat > "$DEST/index.html" <<'HTML'
 </head><body><p><a href="viewer/index.html?lod=30">PLATEAU Recorder の表示画面へ</a></p></body></html>
 HTML
 
-# 応募フォームの文では URL の直後に全角の「）」が続き、メールの自動リンクがその先の文までリンクにする。
-# そうして壊れた URL（…/plateau-recorder/）とソースコード…）で来た人を、404 から表示画面へ送る
-cat > "$DEST/404.html" <<'HTML'
-<!doctype html>
-<html lang="ja"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PLATEAU Recorder</title>
-<!-- URL の後ろに全角の括弧や文が付いて壊れたリンク（例：…/plateau-recorder/）とソースコード…）から来た人を、表示画面へ送る -->
-<meta http-equiv="refresh" content="0; url=/plateau-recorder/">
-<script>location.replace("/plateau-recorder/");</script>
-</head><body><p>ページが見つかりませんでした。<a href="/plateau-recorder/">PLATEAU Recorder の表示画面へ</a></p></body></html>
-HTML
+# 応募フォームの文では URL の直後に全角の「）」が続き、メールの自動リンクが表示画面とコードの 2 つの URL を
+# 1 本のリンクにする。そうして壊れた URL で来た人に、404 で両方を選ばせる（中身は scripts/pages_404.html）
+cp scripts/pages_404.html "$DEST/404.html"
 
 cat > "$DEST/README.md" <<'MD'
 # PLATEAU Recorder（表示画面）
