@@ -2,7 +2,28 @@
 <html lang="ja"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PLATEAU Recorder</title>
-<!-- URL の後ろに全角の括弧や文が付いて壊れたリンク（例：…/plateau-recorder/）とソースコード…）から来た人を、表示画面へ送る -->
-<meta http-equiv="refresh" content="0; url=/plateau-recorder/">
-<script>location.replace("/plateau-recorder/");</script>
-</head><body><p>ページが見つかりませんでした。<a href="/plateau-recorder/">PLATEAU Recorder の表示画面へ</a></p></body></html>
+<!-- 応募フォームの文では URL の直後に全角の「）」が続き、メールの自動リンクが
+     「…/plateau-recorder/）とソースコード（https://github.com/…）を公開しています…」までを 1 本のリンクにする。
+     そのリンクには表示画面とコードの 2 つが入っているので、片方へ勝手に送らず、両方を選べるようにする -->
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --fg:#1d2330; --sub:#5b6474; --line:#dde1e8; --acc:#1f6feb; --acc-fg:#fff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14171c; --card:#1d2129; --fg:#e8ebf0; --sub:#9aa3b2; --line:#2e3440; --acc:#4c8dff; --acc-fg:#0b0e13; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center; padding:16px;
+         background:var(--bg); color:var(--fg); font-family:system-ui,"Yu Gothic UI","Hiragino Sans","Noto Sans JP",sans-serif; }
+  main { width:100%; max-width:520px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:28px 24px; }
+  h1 { font-size:22px; margin:0 0 8px; }
+  p { margin:0 0 20px; color:var(--sub); line-height:1.7; font-size:15px; }
+  a.btn { display:block; text-decoration:none; border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-top:12px; color:var(--fg); }
+  a.btn.main { background:var(--acc); border-color:var(--acc); color:var(--acc-fg); }
+  a.btn b { display:block; font-size:17px; }
+  a.btn span { display:block; font-size:13px; opacity:.85; margin-top:2px; word-break:break-all; }
+</style>
+</head><body><main>
+<h1>PLATEAU Recorder</h1>
+<p>リンクの後ろに文字が付いて、ページの場所がずれていました。開きたい方を選んでください（どちらも公開しています）。</p>
+<a class="btn main" href="/plateau-recorder/"><b>表示画面を開く</b><span>ブラウザで名城大学 4 棟の LOD3 を見る（インストール不要）<br>https://yuu737.github.io/plateau-recorder/</span></a>
+<a class="btn" href="https://github.com/yuu737/plateau-recorder"><b>ソースコードを開く（GitHub）</b><span>https://github.com/yuu737/plateau-recorder</span></a>
+</main></body></html>
