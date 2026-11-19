@@ -2,3 +2,5 @@ numpy
 pillow
 pytest
 claude-agent-sdk
+lxml
+manifold3d
