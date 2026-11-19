@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>値ごとの確かさつき LOD3</title>
+<style>
+  :root { --bg:#f4f3ef; --panel:#ffffff; --ink:#222; --sub:#666; --line:#ddd; --accent:#2f6fb2; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#16181b; --panel:#1f2226; --ink:#eee; --sub:#aaa; --line:#333; --accent:#7fb2ea; } }
+  :root[data-theme="dark"] { --bg:#16181b; --panel:#1f2226; --ink:#eee; --sub:#aaa; --line:#333; --accent:#7fb2ea; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--ink); font-family:"Yu Gothic UI","Meiryo",system-ui,sans-serif; }
+  #app { display:grid; grid-template-columns: 1fr 380px; height:100%; }
+  #view { position:relative; min-width:0; }
+  canvas { display:block; }
+  #panel { background:var(--panel); border-left:1px solid var(--line); overflow:auto; padding:12px 14px; font-size:13px; line-height:1.5; }
+  h1 { font-size:15px; margin:0 0 6px; } h2 { font-size:13px; margin:14px 0 4px; }
+  .row { display:flex; gap:6px; flex-wrap:wrap; margin:6px 0; }
+  button, select { font:inherit; padding:4px 8px; border:1px solid var(--line); background:var(--bg); color:var(--ink); border-radius:6px; cursor:pointer; }
+  button.on { border-color:var(--accent); color:var(--accent); font-weight:600; }
+  .legend div { display:flex; align-items:center; gap:6px; margin:2px 0; }
+  .legend i { width:12px; height:12px; flex:none; display:inline-block; border-radius:2px; border:1px solid #0003; }
+  table { border-collapse:collapse; width:100%; margin-top:4px; }
+  td, th { border-top:1px solid var(--line); padding:3px 4px; vertical-align:top; word-break:break-all; text-align:left; font-weight:normal; }
+  th { color:var(--sub); }
+  .muted { color:var(--sub); }
+  .bar { display:flex; height:14px; border-radius:3px; overflow:hidden; border:1px solid #0002; }
+  .bar span { display:block; height:100%; }
+  .big { font-size:20px; font-weight:700; }
+  #hud { position:absolute; left:10px; top:10px; background:#000a; color:#fff; padding:6px 9px; border-radius:6px; font-size:12px; pointer-events:none; }
+  @media (max-width: 760px) { #app { grid-template-columns: 1fr; grid-template-rows: 58% 42%; } #panel { border-left:none; border-top:1px solid var(--line); } }
+</style>
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+               "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }
+</script>
+<style>
+  .thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 8px; }
+  .thumbs figure { margin: 0; width: 132px; }
+  .thumbs img { width: 132px; height: auto; border: 1px solid #ccc; border-radius: 4px; display: block; }
+  .thumbs figcaption { font-size: 10px; color: #666; word-break: break-all; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="view"><div id="hud">読み込み中…</div></div>
+  <div id="panel">
+    <h1>値ごとの確かさつき LOD3（名城大学 天白キャンパス 4 棟）</h1>
+    <div class="muted">PLATEAU 仕様（CityGML 2.0＋i-UR 3.1）の LOD3 のファイルをそのまま読んで表示しています。色は<b>値の確かさ</b>（公共測量の地図情報レベル相当）。窓や壁をクリックすると、その値の σ・出どころ・根拠の写真が出ます。</div>
+    <div class="row">
+      <button id="m-look">見た目（写真の質感）</button>
+      <button id="m-grade" class="on">確かさ（地図情報レベル相当）</button>
+      <button id="m-lin">出どころ</button>
+      <button id="m-type">地物の種類</button>
+    </div>
+    <div class="row">
+      <select id="lodsel" title="LOD3 の区分（同じ棟の記録から一斉に書き出した物）">
+        <option value="30">LOD3.0（標準）</option><option value="31">LOD3.1</option><option value="32">LOD3.2</option>
+      </select>
+      <button id="t-lod2">LOD2（棟の記録から）</button>
+      <button id="t-inst" class="on">付属物</button>
+      <button id="t-lod1">PLATEAU LOD1（元）</button>
+      <select id="bsel"></select>
+    </div>
+    <div class="legend" id="legend"></div>
+    <h2>窓の確かさ（棟ごと）</h2>
+    <div id="summary"></div>
+    <h2>選んだ地物</h2>
+    <div id="info" class="muted">まだ選んでいません。</div>
+    <h2>物差し</h2>
+    <div class="muted" id="ruler"></div>
+    <div class="muted" style="margin-top:8px">形と窓：スマホの写真から作った棟の記録（写真 1 枚ずつの正面化と、Claude の外壁の読み係による写真判読を含む）。足元と元の LOD1：PLATEAU 名古屋市 2022。屋上の縁の照合：国土地理院 全国最新写真（シームレス）。写真は掲示物・人名・顔を灰色の箱で塗った公開版。</div>
+  </div>
+</div>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+// recorder lod3 build の出力。?lod=30|31|32 で LOD3 の区分を選ぶ（--lod を 2 つ以上渡すと dataset_lod30 のように区分ごとに出る）
+const LOD = new URLSearchParams(location.search).get("lod") || "30";
+const GML_OF = d => `../out/lod3/${d}/udx/bldg/52365768_bldg_6697_op.gml`;
+let GML = GML_OF(`dataset_lod${LOD}`);
+if (!(await fetch(GML, { method: "HEAD" })).ok) GML = GML_OF("dataset");     // 区分ごとの出力が無ければ従来の 1 つ
+// ?gml=<リポジトリからの相対パス> で、ほかの PLATEAU の CityGML（公式の LOD3 との比べなど）をそのまま開く
+const GML_PARAM = new URLSearchParams(location.search).get("gml");
+if (GML_PARAM && /^[\w\-./]+\.gml$/.test(GML_PARAM) && !GML_PARAM.includes("..")) GML = "../" + GML_PARAM;
+const NS = { gml:"http://www.opengis.net/gml", bldg:"http://www.opengis.net/citygml/building/2.0",
+             gen:"http://www.opengis.net/citygml/generics/2.0" };
+const TYPE_COL = { WallSurface:"#d8d2c4", RoofSurface:"#c0504d", GroundSurface:"#555555", OuterCeilingSurface:"#8064a2",
+  OuterFloorSurface:"#4bacc6", Window:"#4f81bd", Door:"#f79646", BuildingInstallation:"#9bbb59" };
+const TYPE_JA = { WallSurface:"壁", RoofSurface:"屋根", GroundSurface:"底", OuterCeilingSurface:"軒下（下向き）",
+  OuterFloorSurface:"床（上向き・上に建物）", Window:"窓", Door:"扉", BuildingInstallation:"付属物" };
+// 確かさ：良い→悪い。色は濃い緑→黄→赤みの灰。灰は ± の記録なし
+const GRADES = [
+  ["地図情報レベル500相当", "#1a7f4b", "水平・高さとも σ 0.25 m 以内"],
+  ["地図情報レベル1000相当", "#5cb85c", "水平 σ 0.70 m・高さ σ 0.33 m 以内"],
+  ["地図情報レベル2500相当", "#e6c229", "水平 σ 1.75 m・高さ σ 0.66 m 以内（PLATEAU の基本）"],
+  ["2500に届かない", "#d9534f", "それより大きい"],
+  ["±の記録なし", "#bdbdbd", "± が書かれていない値が効く"],
+];
+// 強い→弱い（色は いちばん弱い値 の出どころ）
+const LINS = [
+  ["写真で数えた", "#1a7f4b"], ["巻尺から縮尺をつないだ", "#1f6fb2"], ["正面化した写真で読んだ（縮尺は巻尺）", "#2e9bd6"],
+  ["既存の地図データそのまま（PLATEAU・国土地理院・OSM）", "#8e7cc3"], ["正面化した写真で読んだ（縮尺は PLATEAU）", "#5cb85c"],
+  ["正面化した写真で読んだ（縮尺の記録なし）", "#a3c95c"], ["写真の中の比率で読んだ（縮尺なし）", "#e6c229"],
+  ["同じ作りの所から写した", "#f0883e"], ["仮に置いた", "#d9534f"], ["記録なし", "#bdbdbd"],
+];
+const GCOL = Object.fromEntries(GRADES.map(g => [g[0], g[1]])), LCOL = Object.fromEntries(LINS);
+
+const hud = document.getElementById("hud"), view = document.getElementById("view");
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+view.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(getComputedStyle(document.documentElement).getPropertyValue("--bg").trim() || "#f4f3ef");
+const camera = new THREE.PerspectiveCamera(40, 1, 0.5, 5000);
+const controls = new OrbitControls(camera, renderer.domElement);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x666655, 1.7));
+const sun = new THREE.DirectionalLight(0xffffff, 1.4); sun.position.set(-200, 400, 300); scene.add(sun);
+function resize(){ const r = view.getBoundingClientRect(); renderer.setSize(r.width, r.height); camera.aspect = r.width / r.height; camera.updateProjectionMatrix(); }
+addEventListener("resize", resize); resize();
+
+const doc = new DOMParser().parseFromString(await (await fetch(GML)).text(), "application/xml");
+const q = (el, ns, tag) => Array.from(el.getElementsByTagNameNS(NS[ns], tag));
+const gid = el => el.getAttributeNS(NS.gml, "id");
+const attrsOf = el => Array.from(el.children).filter(c => c.namespaceURI === NS.gen && c.localName === "stringAttribute")
+  .map(a => [a.getAttribute("name"), a.getElementsByTagNameNS(NS.gen, "value")[0]?.textContent ?? ""]);
+
+let lat0 = 0, lon0 = 0, h0 = 1e9, n0 = 0;
+for (const pl of q(doc, "gml", "posList")) { const v = pl.textContent.trim().split(/\s+/).map(Number); lat0 += v[0]; lon0 += v[1]; n0++; h0 = Math.min(h0, v[2]); }
+lat0 /= n0; lon0 /= n0;
+const R = 6378137, kx = R * Math.cos(lat0 * Math.PI / 180) * Math.PI / 180, ky = R * Math.PI / 180;
+const toLocal = (lat, lon, h) => new THREE.Vector3((lon - lon0) * kx, h - h0, -(lat - lat0) * ky);
+const ringPts = lr => { const v = lr.getElementsByTagNameNS(NS.gml, "posList")[0].textContent.trim().split(/\s+/).map(Number);
+  const pts = []; for (let i = 0; i + 2 < v.length; i += 3) pts.push(toLocal(v[i], v[i + 1], v[i + 2])); pts.pop(); return pts; };
+
+// 写真の質感（CityGML の app:ParameterizedTexture）：面の gml:id → 画像と、輪ごとのテクスチャ座標
+const APP = "http://www.opengis.net/citygml/appearance/2.0";
+const GML_DIR = GML.slice(0, GML.lastIndexOf("/") + 1);
+const texOf = {};
+for (const pt of doc.getElementsByTagNameNS(APP, "ParameterizedTexture")) {
+  const uri = GML_DIR + pt.getElementsByTagNameNS(APP, "imageURI")[0].textContent.trim();
+  for (const tg of pt.getElementsByTagNameNS(APP, "target")) {
+    const rings = {};
+    for (const tc of tg.getElementsByTagNameNS(APP, "textureCoordinates"))
+      rings[tc.getAttribute("ring").replace(/^#/, "")] = tc.textContent.trim().split(/\s+/).map(Number);
+    texOf[tg.getAttribute("uri").replace(/^#/, "")] = { uri, rings };
+  }
+}
+const texCache = {}, loader = new THREE.TextureLoader();
+const textureOf = uri => texCache[uri] ??= (t => { t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return t; })(loader.load(uri));
+
+function geomOf(polys) {
+  const pos = [], nrm = [], uv = [];
+  let texUri = null;
+  for (const poly of polys) {
+    const lrs = q(poly, "gml", "LinearRing"), rs = lrs.map(ringPts);
+    if (!rs.length || rs[0].length < 3) continue;
+    const tx = texOf[gid(poly)];
+    if (tx) texUri ??= tx.uri;
+    const uvs = lrs.flatMap((lr, i) => { const c = tx?.rings[gid(lr)]; return rs[i].map((_, j) => c ? [c[2 * j], c[2 * j + 1]] : [0, 0]); });
+    const n = new THREE.Vector3(), P = rs[0];
+    for (let i = 0; i < P.length; i++) { const a = P[i], b = P[(i + 1) % P.length]; n.x += (a.y - b.y) * (a.z + b.z); n.y += (a.z - b.z) * (a.x + b.x); n.z += (a.x - b.x) * (a.y + b.y); }
+    n.normalize();
+    const e1 = Math.abs(n.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0).cross(n).normalize();
+    const e2 = n.clone().cross(e1), to2 = p => new THREE.Vector2(p.dot(e1), p.dot(e2));
+    const tris = THREE.ShapeUtils.triangulateShape(rs[0].map(to2), rs.slice(1).map(r => r.map(to2)));
+    const all = rs.flat();
+    for (const tri of tris) for (const k of tri) { const p = all[k]; pos.push(p.x, p.y, p.z); nrm.push(n.x, n.y, n.z); uv.push(...uvs[k]); }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute("normal", new THREE.Float32BufferAttribute(nrm, 3));
+  g.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
+  g.userData.texUri = texUri;
+  return g;
+}
+
+const NAME = { "bldg_05e6cc71-7768-43d3-9af5-3ba5663c44c8":"本部棟", "bldg_feae3e15-dd53-4b4a-8f30-bb05525d15e3":"図書館",
+  "bldg_89288d72-791f-424c-aadd-fb81a2ef906f":"タワー75", "bldg_f8e12e3c-913b-4ee1-926c-bec978e8ef65":"共通講義棟南" };
+const objects = [], buildings = [];
+const groupInst = new THREE.Group(), groupLod1 = new THREE.Group(), groupL3 = new THREE.Group(), groupL2 = new THREE.Group();
+scene.add(groupL3, groupInst, groupLod1, groupL2); groupLod1.visible = false; groupL2.visible = false;
+let rulerText = "";
+for (const b of q(doc, "bldg", "Building")) {
+  const bbox = new THREE.Box3(), name = NAME[gid(b)] || gid(b), wins = [];
+  for (const [k, v] of attrsOf(b)) if (k === "LOD3の精度の物差し") rulerText = v;
+  const add = (el, type, polys, parent = groupL3) => {
+    const g = geomOf(polys); if (!g.attributes.position.count) return;
+    const attrs = attrsOf(el), A = Object.fromEntries(attrs);
+    const mat = new THREE.MeshLambertMaterial({ color: "#ccc", side: THREE.DoubleSide,
+      polygonOffset: type === "Window" || type === "Door", polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
+    const mesh = new THREE.Mesh(g, mat);
+    mesh.userData = { el, type, attrs, grade: A["精度.等級"] || "±の記録なし", lin: A["出どころ（いちばん弱い値）"] || "記録なし", building: name,
+                      texUri: g.userData.texUri };
+    mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(g, 20), new THREE.LineBasicMaterial({ color: 0x333333, transparent: true, opacity: 0.3 })));
+    parent.add(mesh); objects.push(mesh); g.computeBoundingBox(); bbox.union(g.boundingBox);
+    if (type === "Window" && parent === groupL3) wins.push(mesh.userData.grade);
+  };
+  for (const tag of ["WallSurface", "RoofSurface", "GroundSurface", "OuterCeilingSurface", "OuterFloorSurface"])
+    for (const s of q(b, "bldg", tag)) {
+      const ms = s.getElementsByTagNameNS(NS.bldg, "lod3MultiSurface")[0]; if (ms) add(s, tag, q(ms, "gml", "Polygon"));
+      const m2 = s.getElementsByTagNameNS(NS.bldg, "lod2MultiSurface")[0]; if (m2) add(s, tag, q(m2, "gml", "Polygon"), groupL2);
+    }
+  for (const tag of ["Window", "Door"]) for (const w of q(b, "bldg", tag)) add(w, tag, q(w, "gml", "Polygon"));
+  for (const it of q(b, "bldg", "BuildingInstallation")) add(it, "BuildingInstallation", q(it, "gml", "Polygon"), groupInst);
+  const l1 = b.getElementsByTagNameNS(NS.bldg, "lod1Solid")[0];
+  if (l1) groupLod1.add(new THREE.Mesh(geomOf(q(l1, "gml", "Polygon")), new THREE.MeshBasicMaterial({ color: 0x3366cc, wireframe: true, transparent: true, opacity: 0.6 })));
+  buildings.push({ name, bbox, wins });
+}
+document.getElementById("ruler").textContent = rulerText;
+
+let mode = "grade";
+// 見た目：写真の質感があれば貼る。無い面は落ち着いた素材の色（窓はガラス、扉は濃い色）
+const LOOK_COL = { WallSurface:"#d9d1c2", RoofSurface:"#b9b6ae", GroundSurface:"#8a8a85", OuterCeilingSurface:"#cfc8ba",
+  OuterFloorSurface:"#c9c3b5", Window:"#5b6f80", Door:"#4a4038", BuildingInstallation:"#bdb6a8" };
+function paint() {
+  for (const m of objects) {
+    const u = m.userData;
+    const tex = mode === "look" && u.texUri ? textureOf(u.texUri) : null;
+    if (m.material.map !== tex) { m.material.map = tex; m.material.needsUpdate = true; }
+    m.material.color.set(tex ? "#ffffff" : mode === "look" ? LOOK_COL[u.type] : mode === "grade" ? (GCOL[u.grade] || "#bdbdbd")
+      : mode === "lin" ? (LCOL[u.lin] || "#bdbdbd") : TYPE_COL[u.type]);
+    for (const c of m.children) c.visible = mode !== "look";       // 見た目では稜線を消す
+  }
+  const lg = document.getElementById("legend");
+  const nTex = objects.filter(o => o.userData.texUri).length;
+  lg.innerHTML = mode === "look" ? `<div class="muted">写真の質感を貼った地物 ${nTex} 個（公開版の写真から。塗りつぶしは個人情報を消した所）。質感の無い所は素材の色。</div>`
+    : mode === "grade" ? GRADES.map(([k, c, d]) => `<div><i style="background:${c}"></i><b>${k}</b><span class="muted">${d}</span></div>`).join("")
+    : mode === "lin" ? LINS.map(([k, c]) => `<div><i style="background:${c}"></i>${k}</div>`).join("") + `<div class="muted">いちばん弱い値の出どころで色を付けています</div>`
+    : Object.entries(TYPE_JA).map(([k, v]) => `<div><i style="background:${TYPE_COL[k]}"></i>${v}</div>`).join("");
+}
+const btn = id => document.getElementById(id);
+const MODES = [["m-look", "look"], ["m-grade", "grade"], ["m-lin", "lin"], ["m-type", "type"]];
+const setMode = m => { mode = m; MODES.forEach(([id, k]) => btn(id).classList.toggle("on", k === m)); paint(); };
+MODES.forEach(([id, k]) => btn(id).onclick = () => setMode(k));
+let instOn = true;
+btn("t-inst").onclick = e => { instOn = !instOn; groupInst.visible = instOn && !groupL2.visible; e.target.classList.toggle("on", instOn); };
+btn("t-lod2").onclick = e => { const on = !groupL2.visible; groupL2.visible = on; groupL3.visible = !on; groupInst.visible = instOn && !on; e.target.classList.toggle("on", on); };
+const lodsel = btn("lodsel"); lodsel.value = LOD;
+lodsel.onchange = () => { const p = new URLSearchParams(location.search); p.set("lod", lodsel.value); location.search = p.toString(); };
+btn("t-lod1").onclick = e => { groupLod1.visible = !groupLod1.visible; e.target.classList.toggle("on", groupLod1.visible); };
+
+// 棟ごとの窓の確かさ（帯グラフ）
+const sum = document.getElementById("summary");
+const allW = buildings.flatMap(b => b.wins);
+const rowOf = (label, ws) => {
+  const n = ws.length || 1, ok = ws.filter(g => g !== "2500に届かない" && g !== "±の記録なし").length;
+  return `<div style="margin:6px 0"><div style="display:flex;justify-content:space-between"><span>${label}（${ws.length} 枚）</span><span>PLATEAU の基本（2500）以内 <b>${Math.round(100 * ok / n)}%</b></span></div>
+    <div class="bar">${GRADES.map(([k, c]) => { const c2 = ws.filter(g => g === k).length; return c2 ? `<span title="${k}：${c2}" style="width:${100 * c2 / n}%;background:${c}"></span>` : ""; }).join("")}</div></div>`;
+};
+sum.innerHTML = buildings.map(b => rowOf(b.name, b.wins)).join("") + rowOf("4 棟の合計", allW);
+
+const bsel = btn("bsel");
+bsel.innerHTML = `<option value="-1">4 棟ぜんぶ</option>` + buildings.map((b, i) => `<option value="${i}">${b.name}</option>`).join("");
+function frame(box) {
+  const c = box.getCenter(new THREE.Vector3()), s = box.getSize(new THREE.Vector3()).length();
+  controls.target.copy(c); camera.position.copy(c).add(new THREE.Vector3(-0.55, 0.40, 0.75).multiplyScalar(s * 0.95)); controls.update();
+}
+bsel.onchange = () => { const i = +bsel.value; if (i < 0) { const all = new THREE.Box3(); buildings.forEach(b => all.union(b.bbox)); frame(all); } else frame(buildings[i].bbox); };
+bsel.value = "-1"; bsel.onchange();
+
+// 窓ごとの根拠の写真の切り抜き（recorder lod3 build が公開版の写真から作る。無ければ出さない）
+const THUMBS_BASE = "../out/lod3/";
+let THUMBS = {};
+try { THUMBS = await (await fetch(THUMBS_BASE + "thumbs.json")).json(); } catch (e) { THUMBS = {}; }
+
+// クリック：値ごとの表
+const ray = new THREE.Raycaster(), mouse = new THREE.Vector2();
+let picked = null;
+const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+function showInfo(o) {
+  const u = o.userData, A = Object.fromEntries(u.attrs);
+  const vals = {};
+  for (const [k, v] of u.attrs) { const m = k.match(/^(.*)\.(値|±|出どころ|根拠)$/); if (m && !k.startsWith("精度")) (vals[m[1]] ??= {})[m[2]] = v; }
+  const misc = u.attrs.filter(([k]) => !/\.(値|±|出どころ|根拠)$/.test(k) && !k.startsWith("精度.") && k !== "出どころ（いちばん弱い値）");
+  document.getElementById("info").innerHTML =
+    `<div><b>${u.building}・${TYPE_JA[u.type] || u.type}</b></div>` +
+    `<div style="margin:4px 0"><i style="display:inline-block;width:11px;height:11px;background:${GCOL[u.grade] || "#bdbdbd"};border-radius:2px"></i> <span class="big">${esc(u.grade)}</span></div>` +
+    `<div>水平 σ ${esc(A["精度.水平σ"] || "—")}・高さ σ ${esc(A["精度.標高σ"] || "—")}　<span class="muted">出どころ（いちばん弱い値）：${esc(u.lin)}</span></div>` +
+    (/仮に置いた|同じ作り|比率/.test(u.lin) && !/届かない|記録なし/.test(u.grade)
+      ? `<div style="color:#b35c00">注意：いちばん弱い値は物差しで測っておらず、その ± は目安として書かれたもの。この等級は答え合わせで確かめるまで当てにしない。</div>` : "") +
+    (Object.keys(vals).length ? `<table><tr><th>値</th><th></th><th>±</th><th>出どころ</th></tr>` + Object.entries(vals).map(([k, v]) =>
+      `<tr><td>${esc(k)}</td><td>${esc(v["値"] || "")}</td><td>${esc(v["±"] || "—")}</td><td>${esc(v["出どころ"] || "")}<div class="muted">${esc(v["根拠"] || "")}</div></td></tr>`).join("") + `</table>` : "") +
+    (misc.length ? `<table>${misc.map(([k, v]) => `<tr><td>${esc(k)}</td><td colspan="3">${esc(v)}</td></tr>`).join("")}</table>` : "") +
+    (THUMBS[gid(u.el)] ? `<div style="margin-top:6px"><b>根拠の写真</b>（赤い枠がこの窓。写真 1 枚ずつ面に正面化した画像から切り抜き）</div>` +
+      `<div class="thumbs">${THUMBS[gid(u.el)].map(t => `<figure><img src="${THUMBS_BASE}thumbs/${encodeURIComponent(t.file)}" alt=""><figcaption>${esc(t.photo)}</figcaption></figure>`).join("")}</div>` : "") +
+    `<div class="muted">${gid(u.el)}</div>`;
+}
+renderer.domElement.addEventListener("click", ev => {
+  const r = renderer.domElement.getBoundingClientRect();
+  mouse.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+  ray.setFromCamera(mouse, camera);
+  const hit = ray.intersectObjects(objects.filter(o => o.parent.visible !== false), false)[0];
+  if (picked) picked.material.emissive.set(0x000000);
+  if (!hit) return;
+  picked = hit.object; picked.material.emissive.set(0x442200); showInfo(picked);
+});
+
+paint();
+hud.textContent = `${buildings.length} 棟・${objects.length} 個の地物（ドラッグで回転、右ドラッグで移動、ホイールで拡大）`;
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+window.__lod3 = { objects, buildings, camera, controls, THREE, setMode, showInfo };
+</script>
+</body>
+</html>
