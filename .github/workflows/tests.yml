@@ -21,6 +21,10 @@ jobs:
           python-version: "3.13"
           cache: pip
 
+      - name: 日本語フォントを入れる
+        # 写真の塗りつぶしの札（recorder/privacy.py の _font）は日本語のフォントを探す。ubuntu には無いので Noto CJK を入れる
+        run: sudo apt-get update -q && sudo apt-get install -y -q fonts-noto-cjk
+
       - name: 依存を入れる
         # pyproject の依存（numpy・pillow・pytest・claude-agent-sdk）に加え、recorder が中で import する CPU だけの物
         # （cv2・shapely・pyproj・requests・pycolmap・lxml・manifold3d）。torch・Blender・ブラウザは入れない
